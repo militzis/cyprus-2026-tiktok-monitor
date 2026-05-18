@@ -29,10 +29,10 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install minimal deps (just what refresh + report need)
+      - name: Install minimal deps (refresh + report + auto-review)
         run: |
           set -euo pipefail
-          pip install --quiet requests python-dotenv filelock pandas
+          pip install --quiet requests python-dotenv filelock anthropic pandas
 
       # Run the test suite BEFORE touching the live DB or hitting the API.
       # If a recent commit broke load_ads()/derive_status()/numeric-handle
@@ -53,6 +53,27 @@ jobs:
         run: |
           set -euo pipefail
           python refresh_ad_statuses.py --since 24h --limit 500
+
+      # Claude-API second-opinion review of any advertisers promoted
+      # in the last 14 days. Catches the class of misclassification we
+      # discovered today (@petrouiakovos / @champis_me_p / @marioshaperis)
+      # within 24h instead of waiting for a human to notice. ~$0.001 per
+      # handle on Haiku → ~$0.10/day worst case if 100 new promotions.
+      # ANTHROPIC_API_KEY MUST be set as a repo secret for this to run.
+      - name: Auto-review recent promotions
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          POLITICIAN_ADS_DB:  politician_ads_public.db
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning::ANTHROPIC_API_KEY secret not set — skipping auto-review."
+            echo "Add it via Settings → Secrets and variables → Actions."
+            exit 0
+          fi
+          # Cap at 30 handles to bound the API spend per run. Most days
+          # see only a few new promotions; 30 is the rare upper bound.
+          python auto_review.py --bucket recent_promotions --limit 30
 
       - name: Generate daily report
         env:

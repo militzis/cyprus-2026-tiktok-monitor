@@ -24,7 +24,8 @@ playwright>=1.40,<2
 faster-whisper>=1.0,<2
 opencv-python-headless>=4.8,<5
 
-# ── Optional: AI-assisted classification (classify_ads.py) ────────────
+# ── AI-assisted classification (classify_ads.py + auto_review.py) ───
+# auto_review.py is REQUIRED by the daily cron — see daily_status_refresh.yml
 anthropic>=0.18,<1
 
 # ── Stdlib enhancements (daily reports / progress bars) ──────────────
