@@ -121,7 +121,21 @@ def refresh(args):
         prev_stmt    = r['status_statement']
 
         now = datetime.utcnow().isoformat()
-        if new_status != prev_status or (new_stmt or '') != (prev_stmt or ''):
+        # Log to tiktok_ad_status_changes ONLY for meaningful transitions:
+        #   - ad_status itself changed (active→inactive, etc.), OR
+        #   - status_statement gained a takedown signal that wasn't there
+        #     before (the words derive_status() actually looks at)
+        # Statement-only diffs of N/A ↔ N/A or "advertiser_account_deleted..." ↔
+        # N/A (from prior bookkeeping markers) used to flood the log with
+        # active→active rows — 22 noise rows in a single run earlier today.
+        prev_stmt_l = (prev_stmt or '').lower()
+        new_stmt_l  = (new_stmt or '').lower()
+        TAKEDOWN_SIGNALS = ('removed', 'violation', 'deleted', 'expired')
+        prev_signal = any(s in prev_stmt_l for s in TAKEDOWN_SIGNALS)
+        new_signal  = any(s in new_stmt_l for s in TAKEDOWN_SIGNALS)
+        is_real_change = (new_status != prev_status) or (new_signal != prev_signal)
+
+        if is_real_change:
             conn.execute("""INSERT INTO tiktok_ad_status_changes
                             (ad_id, observed_at, prev_status, new_status,
                              prev_statement, new_statement, advertiser_id, handle)
@@ -137,8 +151,12 @@ def refresh(args):
                   f"({(new_stmt or '')[:60]})")
             n_changed += 1
         else:
-            conn.execute("UPDATE tiktok_ads SET last_status_check=? WHERE ad_id=?",
-                         (now, r['ad_id']))
+            # Still update ad_status + status_statement if the API has a fresher
+            # value — just don't insert a row into the changes log.
+            conn.execute("""UPDATE tiktok_ads
+                            SET ad_status=?, status_statement=?, last_status_check=?
+                            WHERE ad_id=?""",
+                         (new_status, new_stmt, now, r['ad_id']))
             n_unchanged += 1
 
         conn.commit()
