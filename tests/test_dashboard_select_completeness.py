@@ -59,6 +59,15 @@ DERIVED_COLUMNS = {
     'latest_ad',         # top['latest_ad'] in tab_party
     '_latest_ad_id',     # internal join key for latest_ad
     'roster_size',       # candidates_df.groupby('party').size() rename
+    # Review-queue tab columns — renamed in groupby().agg()
+    'auto_verdict',      # aliased from auto_review_verdict
+    'auto_confidence',   # aliased from auto_review_confidence
+    'auto_reason',       # aliased from auto_review_reason
+    'auto_disagrees',    # computed post-groupby
+    'max_reach_upper',   # .agg(max_reach_upper=('times_shown_upper_bound','max'))
+    'first_seen',        # .agg(first_seen=('first_shown','min'))
+    'last_seen',         # .agg(last_seen=('last_shown','max'))
+    'has_transcript',    # .agg(has_transcript=('transcript', notna.any))
 }
 
 # Column aliases — load_ads() does `advertiser_disclosed_name AS handle`,
@@ -69,12 +78,39 @@ SELECT_ALIASES = {
 
 
 def extract_select_columns(src: str) -> set[str]:
-    """Find load_ads() and return the bare column names from its SELECT."""
-    m = re.search(r'def\s+load_ads\b.*?pd\.read_sql_query\(\s*"""(.+?)"""',
+    """Find load_ads() and return the bare column names from its SELECT.
+    Handles both plain `pd.read_sql_query(\"\"\"...\"\"\")` and f-string
+    `pd.read_sql_query(f\"\"\"...{cols}\"\"\")` forms — but resolves any
+    f-string interpolation by evaluating the corresponding variable
+    assignment that precedes the call."""
+    m = re.search(r'def\s+load_ads\b.*?pd\.read_sql_query\(\s*f?"""(.+?)"""',
                   src, re.DOTALL)
     if not m:
         raise AssertionError("load_ads() / pd.read_sql_query not found in app_tiktok.py")
     sql = m.group(1)
+    # If the SQL contains `{auto_cols}` (or similar) interpolation,
+    # try to resolve it by finding `auto_cols = ...` assignment above
+    # and substituting its string literal value into the SQL.
+    for placeholder in re.findall(r'\{(\w+)\}', sql):
+        # Look for the variable's string-literal definition
+        assigns = re.findall(
+            rf'\b{placeholder}\s*=\s*(?:"([^"]+)"|\'([^\']+)\')',
+            src,
+        )
+        # Also look for ternary forms `var = X if ... else Y` — concat both
+        ternary = re.findall(
+            rf'\b{placeholder}\s*=\s*\(?\s*"([^"]+)"\s*if[^)]*else\s*"([^"]+)"',
+            src,
+        )
+        substitutions = []
+        for a in assigns:
+            for v in a:
+                if v:
+                    substitutions.append(v)
+        for tup in ternary:
+            substitutions.extend(t for t in tup if t)
+        sql = sql.replace('{' + placeholder + '}',
+                          ', '.join(substitutions) if substitutions else '')
     # Find the SELECT … FROM segment
     select_match = re.search(r'SELECT\s+(.+?)\s+FROM\s+', sql, re.IGNORECASE | re.DOTALL)
     assert select_match, "no SELECT … FROM in load_ads()"

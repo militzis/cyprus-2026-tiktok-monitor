@@ -45,13 +45,25 @@ st.set_page_config(page_title="TikTok ads — Cyprus 2026", layout="wide", page_
 @st.cache_data(ttl=60)
 def load_ads():
     c = sqlite3.connect(DB)
-    df = pd.read_sql_query("""
+    # Probe for optional auto_review_* columns (added by auto_review.py).
+    # If they don't exist yet, fall back to NULLs so the dashboard still
+    # loads on a fresh deploy that hasn't been auto-reviewed yet.
+    existing = {r[1] for r in c.execute("PRAGMA table_info(tiktok_ads)")}
+    auto_cols = (
+        "auto_review_verdict, auto_review_confidence, auto_review_reason, auto_review_at"
+        if {'auto_review_verdict', 'auto_review_confidence',
+            'auto_review_reason', 'auto_review_at'}.issubset(existing)
+        else "NULL AS auto_review_verdict, NULL AS auto_review_confidence, "
+             "NULL AS auto_review_reason, NULL AS auto_review_at"
+    )
+    df = pd.read_sql_query(f"""
         SELECT advertiser_id, advertiser_disclosed_name AS handle,
                matched_candidate, matched_party, matched_district,
                ad_id, first_shown, last_shown, ad_status, status_statement,
                reach_raw, times_shown_lower_bound, times_shown_upper_bound,
                ad_funded_by, videos_json, image_urls_json,
-               ad_url, transcript, match_type, checked_at
+               ad_url, transcript, match_type, checked_at,
+               {auto_cols}
         FROM tiktok_ads
     """, c)
     c.close()
@@ -654,15 +666,36 @@ with tab_review:
                      max_reach_upper  =('times_shown_upper_bound', 'max'),
                      first_seen       =('first_shown',       'min'),
                      last_seen        =('last_shown',        'max'),
-                     has_transcript   =('transcript', lambda s: s.notna().any())))
+                     has_transcript   =('transcript', lambda s: s.notna().any()),
+                     auto_verdict     =('auto_review_verdict',    'first'),
+                     auto_confidence  =('auto_review_confidence', 'first'),
+                     auto_reason      =('auto_review_reason',     'first')))
     handles['profile_url'] = handles['handle'].apply(
         lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+
+    # Compute auto-review disagreement flag — Claude's verdict vs our current tier
+    AGREE_MAP = {
+        'candidate':     {'manual_resume'},
+        'supporter':     {'party_supporter'},
+        'commentator':   {'commentator', 'satirist'},
+        'party_account': {'party_account', 'party_coordinator', 'political_movement'},
+        'news_outlet':   {'news_outlet', 'podcast'},
+        'fp_business':   {'likely_false_positive_business'},
+        'fp_personal':   {'likely_false_positive_personal'},
+    }
+    def _disagrees(row):
+        v = row['auto_verdict']
+        if v is None or pd.isna(v) or v == 'unclear':
+            return False
+        return row['match_type'] not in AGREE_MAP.get(v, set())
+    handles['auto_disagrees'] = handles.apply(_disagrees, axis=1)
 
     LOWER_CONFIDENCE_TIERS = {
         'commentator', 'podcast', 'satirist', 'news_outlet',
         'politician_non_candidate', 'party_supporter', 'party_account',
     }
-    REVIEW_COLS = ['handle', 'match_type', 'matched_candidate', 'matched_party',
+    REVIEW_COLS = ['handle', 'match_type', 'auto_verdict', 'auto_confidence',
+                   'auto_reason', 'matched_candidate', 'matched_party',
                    'matched_district', 'ads', 'max_reach_upper',
                    'first_seen', 'last_seen', 'profile_url']
     REVIEW_COL_CFG = {
@@ -670,7 +703,30 @@ with tab_review:
         'max_reach_upper': st.column_config.NumberColumn('reach ≥', format='%d'),
         'first_seen':      st.column_config.DateColumn(),
         'last_seen':       st.column_config.DateColumn(),
+        'auto_verdict':    st.column_config.Column('🤖 verdict', width='small'),
+        'auto_confidence': st.column_config.NumberColumn('conf', format='%.2f'),
+        'auto_reason':     st.column_config.Column('🤖 reason', width='large'),
     }
+
+    # ─── A0. Claude disagrees with our classification ─────────────────
+    st.divider()
+    st.markdown("### 🤖 Auto-review disagreements (highest priority)")
+    st.caption(
+        "Every handle where Claude's auto_review verdict (run via "
+        "`python auto_review.py`) doesn't match our current `match_type`. "
+        "These are the strongest single signal we have for a "
+        "misclassification — closest to a true second opinion."
+    )
+    disagreements = handles[handles['auto_disagrees']].sort_values(
+        'auto_confidence', ascending=False)
+    if disagreements.empty:
+        st.info("No auto-review disagreements (either nothing reviewed yet, "
+                "or every reviewed handle matches our classification).")
+    else:
+        st.write(f"**{len(disagreements)} handle(s)** where Claude disagrees:")
+        st.dataframe(disagreements[REVIEW_COLS],
+                     use_container_width=True, hide_index=True,
+                     column_config=REVIEW_COL_CFG)
 
     # ─── A. Promoted recently ──────────────────────────────────────────
     st.divider()
