@@ -104,7 +104,7 @@ ANNOTATIONS = {
     'cricospr':              ('Likely false positive', 'Personal/unknown account', '-', '-'),
     # Second batch 2026-05-18
     'voulakokkinou7':        ('Candidate', 'Κοκκίνου Παρασκευή ("Βούλα")', 'ΑΛΜΑ', 'Λευκωσία'),
-    'proeklogikipanagioti':  ('Needs verification', 'Προεκλογική Παναγιώτη — 13 candidates named Π/Παναγιώτης, needs bio scan', '?', '?'),
+    'proeklogikipanagioti':  ('Candidate', 'Χαραλάμπους Παναγιώτης', 'ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ', 'Λευκωσία'),
     'synotruck':             ('Likely false positive', 'Truck dealer', '-', '-'),
     'tek.event':             ('Likely false positive', 'Event production company', '-', '-'),
     'efebozgeyikk':          ('Likely false positive', 'Turkish-Cypriot name (north CY)', '-', '-'),
@@ -113,6 +113,15 @@ ANNOTATIONS = {
     'jimboscryptoland':      ('Likely false positive', 'Crypto account', '-', '-'),
     'charalambos_michael':   ('Likely false positive', 'Musician — song titled "Αμμόχωστος"', '-', '-'),
     'chrisdemetriou26':      ('Likely false positive', 'Personal vlogger (year suffix is coincidence)', '-', '-'),
+    # Verification sweep round 2 (2026-05-18)
+    'champis_me_p':          ('Candidate', 'Χαμπή Μάριος',         'ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ', 'Αμμόχωστος'),
+    'ttoppouzi':             ('Candidate', 'Ττοππουζής Πρόδρομος', 'ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ', 'Λεμεσός'),
+    # @yiannis.laouris promoted from "Needs verification" → ΑΜΔΗ Λευκωσία (CSV match revealed Λαούρης Γιάννης; accent-aware variants matcher caught what literal substring missed)
+    'yiannis.laouris':       ('Candidate', 'Λαούρης Γιάννης',      'ΑΜΔΗ',            'Λευκωσία'),
+    'mary.cris7150':         ('Likely false positive', 'Personal (no candidate match)', '-', '-'),
+    'constantiachrysostomou':('Likely false positive', 'Personal (no roster match)', '-', '-'),
+    'chick.n.fellas':        ('Likely false positive', 'Chicken food business (surname collision with Φελλάς)', '-', '-'),
+    'antonia_adams_':        ('Likely false positive', 'Personal (no roster match)', '-', '-'),
     's.pavlides':            ('Likely false positive', 'Bioiatriki Lab — wellness brand', '-', '-'),
     'reset_cy':              ('Likely false positive', 'Social-issues NGO', '-', '-'),
     'horizon.cyparty':       ('Likely false positive', 'Summer 2026 mountain event', '-', '-'),
