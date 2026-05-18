@@ -157,14 +157,26 @@ with tab_overview:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Top 15 advertisers (by ad count)")
+        # Get most-recent ad_id per advertiser so we can deep-link to one of their ads
+        latest_ad = (f.sort_values('last_shown', ascending=False)
+                       .drop_duplicates('handle')[['handle', 'ad_id']]
+                       .rename(columns={'ad_id': '_latest_ad_id'}))
         top = (f.groupby(['handle', 'matched_candidate', 'matched_party'])
                 .agg(ads=('ad_id', 'count'),
                      first=('first_shown', 'min'),
                      last=('last_shown', 'max'))
                 .reset_index().sort_values('ads', ascending=False).head(15))
-        top['profile'] = top['handle'].apply(lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+        top = top.merge(latest_ad, on='handle', how='left')
+        top['profile'] = top['handle'].apply(
+            lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+        top['latest_ad'] = top['_latest_ad_id'].apply(
+            lambda a: f"https://library.tiktok.com/ads/detail/?ad_id={a}" if pd.notna(a) else "")
+        top = top.drop(columns=['_latest_ad_id'])
         st.dataframe(top, use_container_width=True, hide_index=True,
-                     column_config={'profile': st.column_config.LinkColumn('profile')})
+                     column_config={
+                         'profile':   st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
+                         'latest_ad': st.column_config.LinkColumn('▶ latest ad', display_text='Open ad'),
+                     })
     with c2:
         st.subheader("Reach distribution")
         reach_counts = f['reach_raw'].value_counts().head(10)
@@ -191,6 +203,12 @@ with tab_party:
 
 # ── By candidate ──────────────────────────────────────────────────────────────
 with tab_candidates:
+    # Most-recent ad per candidate, for deep-link button
+    latest_per_cand = (f[f['matched_candidate'] != '']
+                        .sort_values('last_shown', ascending=False)
+                        .drop_duplicates(['matched_candidate', 'handle'])
+                        [['matched_candidate', 'handle', 'ad_id']]
+                        .rename(columns={'ad_id': '_latest_ad_id'}))
     cand_stats = (f[f['matched_candidate'] != '']
                   .groupby(['matched_candidate', 'matched_party', 'matched_district', 'handle'])
                   .agg(ads=('ad_id', 'count'),
@@ -198,10 +216,17 @@ with tab_candidates:
                        last=('last_shown', 'max'),
                        active=('ad_status', lambda s: (s == 'active').sum()))
                   .reset_index().sort_values('ads', ascending=False))
+    cand_stats = cand_stats.merge(latest_per_cand, on=['matched_candidate', 'handle'], how='left')
     cand_stats['profile'] = cand_stats['handle'].apply(
         lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+    cand_stats['latest_ad'] = cand_stats['_latest_ad_id'].apply(
+        lambda a: f"https://library.tiktok.com/ads/detail/?ad_id={a}" if pd.notna(a) else "")
+    cand_stats = cand_stats.drop(columns=['_latest_ad_id'])
     st.dataframe(cand_stats, use_container_width=True, hide_index=True,
-                 column_config={'profile': st.column_config.LinkColumn('profile')})
+                 column_config={
+                     'profile':   st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
+                     'latest_ad': st.column_config.LinkColumn('▶ latest ad', display_text='Open ad'),
+                 })
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
 with tab_browse:
@@ -217,15 +242,21 @@ with tab_browse:
                                                           if h in advertisers_with_ads['handle'].values else h)
     if selected_handle:
         ads = f[f['handle'] == selected_handle].sort_values('first_shown')
-        st.write(f"**{len(ads)} ads** for `@{selected_handle}`")
+        prof_url = f"https://www.tiktok.com/@{selected_handle}" if selected_handle and not str(selected_handle).isdigit() else ""
+        head_c1, head_c2 = st.columns([3, 2])
+        with head_c1:
+            st.write(f"**{len(ads)} ads** for `@{selected_handle}`")
+        with head_c2:
+            if prof_url:
+                st.link_button(f"🔗 Open @{selected_handle} on TikTok", prof_url, use_container_width=True)
         for _, ad in ads.iterrows():
             with st.expander(f"ad_id {ad['ad_id']} — {ad['first_shown'].date() if pd.notna(ad['first_shown']) else '?'} → {ad['last_shown'].date() if pd.notna(ad['last_shown']) else '?'}  ·  {ad['kind']}  ·  reach {ad['reach_raw']}"):
                 cA, cB = st.columns([3, 2])
                 with cA:
-                    # Try to play from local file first
-                    local_dir = os.path.join(CREATIVES, ad['handle'])
+                    # Try to play from local file first (dev only — Streamlit Cloud won't have these)
+                    local_dir = os.path.join(CREATIVES, ad['handle']) if ad['handle'] else ''
                     found_file = None
-                    if os.path.isdir(local_dir):
+                    if local_dir and os.path.isdir(local_dir):
                         for fn in os.listdir(local_dir):
                             if fn.startswith(ad['ad_id']):
                                 found_file = os.path.join(local_dir, fn)
@@ -235,8 +266,15 @@ with tab_browse:
                     elif found_file and found_file.endswith('.jpg'):
                         st.image(found_file)
                     else:
-                        st.info("Creative not downloaded locally — open via library link below")
-                    st.markdown(f"[📺 Open in TikTok library]({ad['library_url']})")
+                        st.info("🎬 Ad creative not bundled with the public snapshot — click below to view on TikTok Ad Library")
+
+                    # Prominent link buttons (Streamlit's st.link_button renders as a real button)
+                    btn_c1, btn_c2 = st.columns(2)
+                    with btn_c1:
+                        st.link_button("▶ View ad on TikTok Library", ad['library_url'], use_container_width=True)
+                    with btn_c2:
+                        if prof_url:
+                            st.link_button(f"🔗 @{ad['handle']} profile", prof_url, use_container_width=True)
                 with cB:
                     st.write(f"**Status:** {ad['ad_status']}")
                     st.write(f"**Days active:** {ad['days_active']}")
@@ -266,7 +304,13 @@ with tab_transcripts:
                     start = max(0, idx - 80)
                     end   = min(len(txt), idx + len(q) + 200)
                     st.markdown(f"...{txt[start:idx]}**{txt[idx:idx+len(q)]}**{txt[idx+len(q):end]}...")
-                st.markdown(f"[Library]({ad['library_url']})  ·  [Profile](https://www.tiktok.com/@{ad['handle']})")
+                lc1, lc2 = st.columns(2)
+                with lc1:
+                    st.link_button("▶ View ad on TikTok Library", ad['library_url'], use_container_width=True)
+                with lc2:
+                    prof = f"https://www.tiktok.com/@{ad['handle']}" if ad['handle'] and not str(ad['handle']).isdigit() else ""
+                    if prof:
+                        st.link_button(f"🔗 @{ad['handle']} profile", prof, use_container_width=True)
     else:
         st.info("Type a word or phrase to search ad transcripts. Useful queries: party names (ΑΚΕΛ, ΔΗΣΥ, ΕΛΑΜ), policy terms (εκποίηση, στέγη, ψηφίστε), candidate names.")
 
@@ -277,8 +321,10 @@ with tab_raw:
                  'matched_district', 'ad_id', 'first_shown', 'last_shown',
                  'ad_status', 'reach_raw', 'kind', 'profile_url', 'library_url']
     st.dataframe(f[show_cols], use_container_width=True, hide_index=True,
-                 column_config={'profile_url': st.column_config.LinkColumn(),
-                                'library_url': st.column_config.LinkColumn()})
+                 column_config={
+                     'profile_url': st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
+                     'library_url': st.column_config.LinkColumn('▶ ad library', display_text='Open ad'),
+                 })
     csv = f.to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download filtered CSV", csv,
                        file_name=f"tiktok_ads_filtered_{date.today()}.csv",
