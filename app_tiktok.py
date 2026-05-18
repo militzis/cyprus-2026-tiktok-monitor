@@ -48,8 +48,8 @@ def load_ads():
     df = pd.read_sql_query("""
         SELECT advertiser_id, advertiser_disclosed_name AS handle,
                matched_candidate, matched_party, matched_district,
-               ad_id, first_shown, last_shown, ad_status, reach_raw,
-               times_shown_lower_bound, times_shown_upper_bound,
+               ad_id, first_shown, last_shown, ad_status, status_statement,
+               reach_raw, times_shown_lower_bound, times_shown_upper_bound,
                ad_funded_by, videos_json, image_urls_json,
                ad_url, transcript, match_type, checked_at
         FROM tiktok_ads
