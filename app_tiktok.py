@@ -614,7 +614,7 @@ with tab_transcripts:
 
 # ── Raw data ──────────────────────────────────────────────────────────────────
 with tab_raw:
-    st.subheader(f"All {len(f)} ads matching filters")
+    st.subheader(f"Total ads: {len(f)}")
     show_cols = ['match_type', 'handle', 'matched_candidate', 'matched_party',
                  'matched_district', 'ad_id', 'first_shown', 'last_shown',
                  'ad_status', 'reach_raw', 'kind', 'profile_url', 'library_url']
@@ -624,6 +624,6 @@ with tab_raw:
                      'library_url': st.column_config.LinkColumn('▶ ad library', display_text='Open ad'),
                  })
     csv = f.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download filtered CSV", csv,
-                       file_name=f"tiktok_ads_filtered_{date.today()}.csv",
+    st.download_button("📥 Download CSV", csv,
+                       file_name=f"tiktok_ads_{date.today()}.csv",
                        mime="text/csv")
