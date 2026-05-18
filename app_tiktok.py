@@ -186,11 +186,15 @@ st.divider()
 import numpy as np
 def derive_status(row, today=pd.Timestamp.today()):
     raw = (row.get('ad_status') or '').lower()
-    if 'removed' in raw or 'violation' in raw:
+    # TikTok takedowns: status often stays 'inactive' but the violation note
+    # appears in status_statement ("Removed from TikTok due to a violation of
+    # TikTok's terms"). Check both so we don't miss enforcement events.
+    stmt = (row.get('status_statement') or '').lower()
+    if 'removed' in raw or 'removed' in stmt or 'violation' in raw or 'violation' in stmt:
         return '🚨 Removed by TikTok'
-    if 'deleted' in raw:
+    if 'deleted' in raw or 'deleted_by_advertiser' in stmt:
         return '🗑 Deleted by advertiser'
-    if raw == 'expired':
+    if raw == 'expired' or 'expired' in stmt:
         return '⌛ Expired'
     # date-derived
     ls = row.get('last_shown')
@@ -499,8 +503,14 @@ with tab_status:
             timeline.columns = ['week', 'changes']
             st.line_chart(timeline, x='week', y='changes', height=300)
 
-        # Headline: removed by TikTok
-        removed = changes[changes['new_status'] == 'removed_by_tiktok']
+        # Headline: removed by TikTok — match on either new_status or the
+        # violation note in new_statement (TikTok often leaves status as
+        # 'inactive' but puts the takedown reason in new_statement).
+        stmt_lower = changes['new_statement'].fillna('').str.lower()
+        is_removed = (changes['new_status'] == 'removed_by_tiktok') | \
+                     stmt_lower.str.contains('removed', na=False) | \
+                     stmt_lower.str.contains('violation', na=False)
+        removed = changes[is_removed]
         if not removed.empty:
             st.divider()
             st.subheader(f"🚨 {len(removed)} ads have been REMOVED by TikTok")
