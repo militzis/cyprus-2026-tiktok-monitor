@@ -33,7 +33,8 @@ AD_DETAIL_URL = f"{t.API_BASE}/v2/research/adlib/ad/detail/"
 
 
 def ensure_schema(conn: sqlite3.Connection):
-    """Add the status-changes log table + last_status_check column."""
+    """Add the status-changes log table + last_status_check column + the
+    pipeline_health heartbeat table."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tiktok_ad_status_changes (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,10 +51,49 @@ def ensure_schema(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_status_changes_ad_id ON tiktok_ad_status_changes(ad_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_status_changes_observed ON tiktok_ad_status_changes(observed_at);")
 
+    # Heartbeat table — every refresh writes one row at the end. Dashboard
+    # reads MAX(finished_at) to show "last refresh: N hours ago"; if older
+    # than 25h it surfaces a red warning. Without this, a silently-failed
+    # cron is invisible until someone notices the data is stale (today's
+    # bug class).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_health (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_kind     TEXT    NOT NULL,    -- 'refresh' | 'discover' | etc.
+            started_at   TEXT    NOT NULL,
+            finished_at  TEXT    NOT NULL,
+            status       TEXT    NOT NULL,    -- 'ok' | 'failed'
+            ads_checked  INTEGER,
+            changes      INTEGER,
+            errors       INTEGER,
+            error_msg    TEXT,                -- non-null when status='failed'
+            since_arg    TEXT,                -- CLI args, for debugging
+            limit_arg    INTEGER
+        );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_health_finished "
+                 "ON pipeline_health(finished_at);")
+
     # Add last_status_check column if missing
     cols = [r[1] for r in conn.execute("PRAGMA table_info(tiktok_ads)").fetchall()]
     if 'last_status_check' not in cols:
         conn.execute("ALTER TABLE tiktok_ads ADD COLUMN last_status_check TEXT;")
+    conn.commit()
+
+
+def record_health(conn, run_kind, started_at, status,
+                  ads_checked=None, changes=None, errors=None,
+                  error_msg=None, since_arg=None, limit_arg=None):
+    """Insert one row into pipeline_health. Always called from a top-level
+    try/finally so even crashes get recorded."""
+    finished_at = datetime.utcnow().isoformat()
+    conn.execute("""
+        INSERT INTO pipeline_health
+          (run_kind, started_at, finished_at, status,
+           ads_checked, changes, errors, error_msg, since_arg, limit_arg)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (run_kind, started_at, finished_at, status,
+          ads_checked, changes, errors, error_msg, since_arg, limit_arg))
     conn.commit()
 
 
@@ -87,9 +127,39 @@ def refresh(args):
 
 
 def _refresh_impl(args):
+    started_at = datetime.utcnow().isoformat()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
+    # Counters for the heartbeat row written at the end (or on failure)
+    n_changed_total   = 0
+    n_unchanged_total = 0
+    n_failed_total    = 0
+    crash_msg         = None
+    try:
+        n_changed_total, n_unchanged_total, n_failed_total = \
+            _refresh_loop(args, conn)
+    except Exception as e:
+        crash_msg = repr(e)
+        raise
+    finally:
+        record_health(
+            conn,
+            run_kind='refresh',
+            started_at=started_at,
+            status='failed' if crash_msg else 'ok',
+            ads_checked=n_changed_total + n_unchanged_total + n_failed_total,
+            changes=n_changed_total,
+            errors=n_failed_total,
+            error_msg=crash_msg,
+            since_arg=getattr(args, 'since', None),
+            limit_arg=getattr(args, 'limit', None),
+        )
+        conn.close()
+
+
+def _refresh_loop(args, conn):
+    """Inner loop. Returns (n_changed, n_unchanged, n_failed)."""
 
     # Pick which ads to refresh
     if args.all:
@@ -110,7 +180,7 @@ def _refresh_impl(args):
 
     print(f"  candidates to refresh: {len(rows)}")
     if not rows:
-        print("  nothing to do."); return
+        print("  nothing to do."); return (0, 0, 0)
 
     t.get_access_token()
 
@@ -173,8 +243,10 @@ def _refresh_impl(args):
         # Light throttle to avoid hammering the API
         time.sleep(getattr(t, 'REQUEST_DELAY', 0.5))
 
-    conn.close()
+    # Don't close conn here — _refresh_impl owns it (so the heartbeat
+    # row can be written in the finally block before close).
     print(f"\n  ── done ──  changed: {n_changed}  unchanged: {n_unchanged}  errors: {n_failed}")
+    return (n_changed, n_unchanged, n_failed)
 
 
 def _parse_duration(s: str) -> timedelta:

@@ -167,6 +167,58 @@ st.title("🎯 TikTok Political Ads — Cyprus 2026")
 st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.columns else '?'}  ·  "
            f"DB: `{DB}`")
 
+
+# ── Pipeline health badge ─────────────────────────────────────────────────────
+# Reads the most recent row from pipeline_health (written by
+# refresh_ad_statuses.py at the end of each run). If older than 25h OR if
+# the last run's status='failed', surface a red warning. Without this,
+# silent cron failures would only be detected by humans noticing data
+# going stale (today's bug class).
+@st.cache_data(ttl=60)
+def load_last_health():
+    try:
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT run_kind, finished_at, status, ads_checked, changes, "
+            "errors, error_msg FROM pipeline_health "
+            "ORDER BY finished_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return row
+    except Exception:
+        return None
+
+_h = load_last_health()
+if _h is None:
+    st.warning(
+        "⚠ **Pipeline health: unknown.** No `pipeline_health` row has been "
+        "written yet. The first cron refresh will populate it. If this "
+        "persists for >24h, the daily workflow has never run successfully."
+    )
+else:
+    _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
+    _fin_ts = pd.to_datetime(_fin)
+    _age_h  = (pd.Timestamp.utcnow().tz_localize(None) - _fin_ts).total_seconds() / 3600
+    if _stat == 'failed':
+        st.error(
+            f"🚨 **Last pipeline run FAILED** ({_kind}, {_fin_ts:%Y-%m-%d %H:%M} UTC, "
+            f"{_age_h:.1f}h ago). Error: `{_err_msg or '(no message)'}`. "
+            f"Check the GitHub Actions log."
+        )
+    elif _age_h > 25:
+        st.error(
+            f"🚨 **Pipeline is STALE** — last successful refresh was "
+            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f} h ago). The daily "
+            f"cron may have stopped firing. Check GitHub Actions."
+        )
+    else:
+        st.success(
+            f"✅ Pipeline healthy — last {_kind} refresh "
+            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f}h ago), "
+            f"checked {_ads or 0} ads, {_changes or 0} change(s), "
+            f"{_errs or 0} API error(s)."
+        )
+
 # ── KPI row ───────────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Total ads", len(f))
