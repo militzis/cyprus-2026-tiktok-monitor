@@ -222,11 +222,71 @@ with tab_candidates:
     cand_stats['latest_ad'] = cand_stats['_latest_ad_id'].apply(
         lambda a: f"https://library.tiktok.com/ads/detail/?ad_id={a}" if pd.notna(a) else "")
     cand_stats = cand_stats.drop(columns=['_latest_ad_id'])
+
+    st.subheader("Candidates with TikTok ads")
     st.dataframe(cand_stats, use_container_width=True, hide_index=True,
                  column_config={
                      'profile':   st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
                      'latest_ad': st.column_config.LinkColumn('▶ latest ad', display_text='Open ad'),
                  })
+
+    st.divider()
+    st.subheader("📂 See ALL ads from a candidate")
+    if not cand_stats.empty:
+        # Build labelled options like "Παρασχού Αντώνης — ΣΗΚΟΥ ΠΑΝΩ · Αμμόχωστος (3 ads)"
+        opts = cand_stats.assign(
+            label=lambda d: d.apply(
+                lambda r: f"{r['matched_candidate']} — {r['matched_party']} · {r['matched_district']}  ({r['ads']} ads)",
+                axis=1)
+        )[['label', 'handle']].drop_duplicates('label')
+
+        picked_label = st.selectbox(
+            "Pick a candidate to see every one of their ads",
+            options=opts['label'].tolist(),
+            index=None,
+            placeholder="Type to search candidate name, party, or district…",
+        )
+        if picked_label:
+            picked_handle = opts.loc[opts['label'] == picked_label, 'handle'].iloc[0]
+            cand_ads = f[f['handle'] == picked_handle].sort_values('first_shown', ascending=False)
+            prof_url = f"https://www.tiktok.com/@{picked_handle}" if picked_handle and not str(picked_handle).isdigit() else ""
+            cand_row = cand_stats[cand_stats['handle'] == picked_handle].iloc[0]
+
+            # Header card
+            h1, h2 = st.columns([3, 2])
+            with h1:
+                st.markdown(f"### {cand_row['matched_candidate']}")
+                st.markdown(f"**{cand_row['matched_party']}** · {cand_row['matched_district']}  ·  `@{picked_handle}`")
+                st.caption(f"{cand_row['ads']} ads · first {cand_row['first'].date() if pd.notna(cand_row['first']) else '?'} · last {cand_row['last'].date() if pd.notna(cand_row['last']) else '?'} · {cand_row['active']} currently active")
+            with h2:
+                if prof_url:
+                    st.link_button(f"🔗 Open @{picked_handle} on TikTok",
+                                    prof_url, use_container_width=True)
+
+            # All ads, most recent first
+            st.markdown(f"##### All {len(cand_ads)} ads")
+            for _, ad in cand_ads.iterrows():
+                date_str = (f"{ad['first_shown'].date()} → {ad['last_shown'].date()}"
+                            if pd.notna(ad['first_shown']) and pd.notna(ad['last_shown']) else "?")
+                with st.expander(f"📺 {date_str}  ·  {ad['kind']}  ·  reach {ad['reach_raw']}  ·  ad_id {ad['ad_id']}"):
+                    cA, cB = st.columns([3, 2])
+                    with cA:
+                        st.info("🎬 Click below to view the ad on TikTok's official Ad Library")
+                        bb1, bb2 = st.columns(2)
+                        with bb1:
+                            st.link_button("▶ View ad", ad['library_url'], use_container_width=True)
+                        with bb2:
+                            if prof_url:
+                                st.link_button("🔗 Profile", prof_url, use_container_width=True)
+                    with cB:
+                        st.write(f"**Status:** {ad['ad_status']}")
+                        st.write(f"**Days active:** {ad['days_active']}")
+                        st.write(f"**Reach:** {ad['reach_raw']}")
+                        if ad.get('transcript') and len(ad['transcript']) > 20:
+                            with st.expander("📝 Transcript"):
+                                st.text(ad['transcript'])
+    else:
+        st.info("No candidate ads match the current filters. Loosen the sidebar filters to see more.")
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
 with tab_browse:
