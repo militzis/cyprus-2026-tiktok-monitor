@@ -329,9 +329,10 @@ df['derived_status'] = df.apply(derive_status, axis=1)
 f['derived_status'] = f.apply(derive_status, axis=1)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_overview, tab_spend, tab_party, tab_candidates, tab_status, tab_review, tab_browse, tab_transcripts, tab_raw = st.tabs([
-    "📊 Overview", "💶 Spend", "🏛 By party", "👤 By candidate", "🚦 Status & changes",
-    "🔍 Review queue",
+(tab_overview, tab_enforce, tab_spend, tab_party, tab_candidates,
+ tab_status, tab_review, tab_browse, tab_transcripts, tab_raw) = st.tabs([
+    "📊 Overview", "🚨 Enforcement", "💶 Spend", "🏛 By party", "👤 By candidate",
+    "🚦 Status & changes", "🔍 Review queue",
     "🎬 Browse ads", "📝 Transcript search", "🗂 Raw data",
 ])
 
@@ -370,6 +371,202 @@ with tab_overview:
         st.subheader("Reach distribution")
         reach_counts = f['reach_raw'].value_counts().head(10)
         st.bar_chart(reach_counts, height=300)
+
+# ── Enforcement scorecard ────────────────────────────────────────────────────
+# Single-page, journalist-quotable answer to: "How well does TikTok enforce
+# its own no-political-ads policy in Cyprus?"
+# Everything here is built from public data; the methodology is documented
+# in-page so any number can be reproduced. The headline framing (the big
+# percentage at the top + the 4 stat cards) is what a journalist or
+# regulator can paste into a story or report.
+with tab_enforce:
+    st.subheader("🚨 TikTok enforcement scorecard — Cyprus 2026")
+    st.caption(
+        "TikTok bans paid political advertising globally. This page measures "
+        "how well that ban is enforced in Cyprus, based on the ads we've "
+        "discovered in TikTok's own Commercial Content Library + each ad's "
+        "current status (active / inactive / removed by TikTok). "
+        "Every number on this page is reproducible from the public DB; "
+        "see the methodology note at the bottom."
+    )
+
+    # ─── Build the universe of "potential policy violations" ─────────
+    # Definition: any ad in a political tier — candidates, supporters,
+    # party accounts, party-aligned movements. Excludes commentators and
+    # news outlets (which may be exempt or fall in a grey area).
+    POLITICAL_TIERS = {'manual_resume', 'party_coordinator',
+                       'political_movement', 'party_supporter', 'party_account'}
+    pol = f[f['match_type'].isin(POLITICAL_TIERS)].copy()
+
+    # Detect removal: derive_status() already handles the
+    # 'inactive + status_statement contains removed/violation' pattern.
+    pol['removed_by_tiktok'] = pol['derived_status'] == '🚨 Removed by TikTok'
+
+    n_detected     = len(pol)
+    n_removed      = int(pol['removed_by_tiktok'].sum())
+    n_still_active = int(pol['ad_status'].fillna('').str.lower().eq('active').sum())
+    n_advertisers  = pol['advertiser_id'].nunique()
+    removal_rate   = (n_removed / n_detected * 100) if n_detected else 0.0
+
+    # Spend exposed before takedown — uses the mid-CPM estimate
+    if 'estimated_spend_eur_mid' in pol.columns:
+        eur_removed       = int(pol[pol['removed_by_tiktok']]['estimated_spend_eur_mid'].fillna(0).sum())
+        eur_still_active  = int(pol[pol['ad_status'].fillna('').str.lower().eq('active')]['estimated_spend_eur_mid'].fillna(0).sum())
+        eur_total_political = int(pol['estimated_spend_eur_mid'].fillna(0).sum())
+    else:
+        eur_removed = eur_still_active = eur_total_political = 0
+
+    # Median days to removal — for the K rows TikTok removed, how long
+    # between when we first saw the ad live and when status_change_log
+    # marked it removed?
+    median_days_to_removal = None
+    try:
+        conn = sqlite3.connect(DB)
+        # Find removal events in tiktok_ad_status_changes that match
+        # our political-tier ad_ids, and pair with first_shown in tiktok_ads.
+        ad_ids = ", ".join(f"'{a}'" for a in pol[pol['removed_by_tiktok']]['ad_id'].tolist())
+        if ad_ids:
+            days_rows = conn.execute(f"""
+                SELECT
+                  julianday(sc.observed_at) - julianday(a.first_shown) AS days_to_removal
+                FROM tiktok_ad_status_changes sc
+                JOIN tiktok_ads a USING(ad_id)
+                WHERE sc.ad_id IN ({ad_ids})
+                  AND (
+                    LOWER(IFNULL(sc.new_statement,'')) LIKE '%removed%'
+                    OR LOWER(IFNULL(sc.new_statement,'')) LIKE '%violation%'
+                  )
+            """).fetchall()
+            if days_rows:
+                values = sorted([float(r[0]) for r in days_rows if r[0] is not None])
+                if values:
+                    median_days_to_removal = values[len(values)//2]
+        conn.close()
+    except Exception:
+        pass
+
+    # ─── Headline metric: BIG removal rate ─────────────────────────────
+    st.markdown(
+        f"<div style='text-align:center; padding: 30px 20px 10px;'>"
+        f"<div style='font-size: 18px; color:#666;'>TikTok enforcement rate (Cyprus 2026)</div>"
+        f"<div style='font-size: 80px; font-weight: bold; color: "
+        f"{'#d62728' if removal_rate < 50 else '#2ca02c'};'>{removal_rate:.1f}%</div>"
+        f"<div style='font-size:16px; color:#666;'>"
+        f"of detected political ads were removed by TikTok"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ─── 4 stat cards ─────────────────────────────────────────────────
+    st.divider()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Political ads detected", f"{n_detected:,}",
+              help="All ads in candidate/supporter/party tiers")
+    k2.metric("Removed by TikTok", f"{n_removed:,}",
+              help="Ad status reports 'removed' or 'violation' in status_statement")
+    k3.metric("Still active",        f"{n_still_active:,}",
+              help="ad_status='active' as of last refresh — ongoing policy violations")
+    k4.metric("Median days to removal",
+              f"{median_days_to_removal:.0f}" if median_days_to_removal else "—",
+              help="Days between first_shown and the takedown event in status_changes log")
+
+    # ─── Money exposed ────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 💶 Estimated spend exposed (before takedown)")
+    e1, e2, e3 = st.columns(3)
+    e1.metric("On removed ads",         f"€{eur_removed:,}",
+              help="Mid-CPM estimate of spend on ads TikTok eventually removed")
+    e2.metric("On still-active ads",    f"€{eur_still_active:,}",
+              help="Mid-CPM estimate of currently-violating spend")
+    e3.metric("Total detected",         f"€{eur_total_political:,}",
+              help="Mid-CPM estimate across all political-tier ads")
+
+    if eur_total_political > 0:
+        enforcement_eur_pct = eur_removed / eur_total_political * 100
+        st.caption(
+            f"TikTok removed **€{eur_removed:,} of an estimated €{eur_total_political:,}** "
+            f"in political ad spend — **{enforcement_eur_pct:.1f}%** by money "
+            f"({removal_rate:.1f}% by ad count). "
+            f"€{eur_still_active:,} of policy-violating spend is currently still live."
+        )
+
+    # ─── Trend: detected vs removed by month ──────────────────────────
+    st.divider()
+    st.markdown("### Monthly detection vs removal")
+    if not pol.empty:
+        pol_dt = pol.copy()
+        pol_dt['month'] = pol_dt['first_shown'].dt.to_period('M').dt.to_timestamp()
+        monthly = (pol_dt
+                    .groupby('month', as_index=False)
+                    .agg(detected=('ad_id', 'count'),
+                         removed =('removed_by_tiktok', 'sum')))
+        monthly['rate %'] = (monthly['removed'] / monthly['detected'] * 100).round(1)
+        st.bar_chart(monthly.set_index('month')[['detected', 'removed']], height=280)
+        st.caption(
+            "Bars: detected (all political ads first shown that month) vs removed "
+            "(TikTok takedowns). A widening gap = enforcement falling behind."
+        )
+
+    # ─── Currently-live offenders worth flagging ──────────────────────
+    st.divider()
+    st.markdown("### Currently-live ads worth flagging to TikTok")
+    st.caption(
+        "Political ads with `ad_status='active'` AND mid-CPM estimate ≥ €100. "
+        "Use `export_bulk_report.py` to produce a TikTok-reporter-form CSV "
+        "and submit these for enforcement review."
+    )
+    live = pol[
+        pol['ad_status'].fillna('').str.lower().eq('active')
+    ].copy()
+    if 'estimated_spend_eur_mid' in live.columns:
+        live = live[live['estimated_spend_eur_mid'].fillna(0) >= 100]
+    live = live.sort_values('estimated_spend_eur_mid', ascending=False).head(25)
+    if live.empty:
+        st.info("No still-live ads above the €100 spend threshold.")
+    else:
+        live['profile_url'] = live['handle'].apply(
+            lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+        cols_to_show = ['handle', 'matched_candidate', 'matched_party',
+                        'ad_id', 'first_shown', 'last_shown',
+                        'estimated_spend_eur_mid', 'ad_url', 'profile_url']
+        st.dataframe(
+            live[cols_to_show],
+            use_container_width=True, hide_index=True,
+            column_config={
+                'ad_url':                  st.column_config.LinkColumn('▶ ad library', display_text='Open'),
+                'profile_url':             st.column_config.LinkColumn('👤 profile',   display_text='Open'),
+                'estimated_spend_eur_mid': st.column_config.NumberColumn('€ mid', format='€%d'),
+                'first_shown':             st.column_config.DateColumn(),
+                'last_shown':              st.column_config.DateColumn(),
+            }
+        )
+
+    # ─── Methodology ──────────────────────────────────────────────────
+    st.divider()
+    with st.expander("📐 Methodology — how every number above is computed", expanded=False):
+        st.markdown("""
+**Universe of ads ("political")** — every row in `tiktok_ads` with `match_type` in:
+`manual_resume`, `party_coordinator`, `political_movement`, `party_supporter`, `party_account`.
+Excluded: `commentator`, `news_outlet`, `podcast`, `satirist`, `politician_non_candidate`
+(grey-zone or arguably-exempt content).
+
+**Detected** — count of those rows after the sidebar filter.
+
+**Removed by TikTok** — `derived_status == '🚨 Removed by TikTok'`. The derive function checks BOTH `ad_status` (sometimes flips to `removed_by_tiktok`) AND `status_statement` (often contains *"Removed from TikTok due to a violation of TikTok's terms"* even when `ad_status` stays `inactive`).
+
+**Still active** — `ad_status='active'` per the most recent `refresh_ad_statuses.py` run. Stale if the daily cron hasn't fired; see the green badge at the top of the dashboard for last-refresh time.
+
+**Median days to removal** — for each removed ad, `julianday(observed_at) - julianday(first_shown)` from `tiktok_ad_status_changes`, then the median.
+
+**€ estimates** — `times_shown_lower/upper_bound × CPM / 1000`. CPMs: €3 (low) / €5 (mid) / €8 (high). Mid is reported here. Bounded by `--limit 30` per cron run on auto-review, so spend numbers might lag slightly for the freshest ads.
+
+**Why this is not a perfect measure of enforcement** —
+1. We only see what TikTok itself publishes in the Commercial Content Library; ads that were never indexed don't appear.
+2. TikTok's reach buckets are wide (the 10K-100K bucket is a 10× range), so € estimates have meaningful precision limits.
+3. "Removed by TikTok" includes only ads where TikTok publicly attributed removal to a policy violation; some are just inactive without explanation.
+
+All code is open-source. To reproduce any number: clone the deploy repo, open the public DB in SQLite, and run the queries above.
+        """)
 
 # ── Spend (estimated €) ───────────────────────────────────────────────────────
 # Aggregates the per-ad estimates into per-party / per-candidate /
