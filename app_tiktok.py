@@ -514,16 +514,30 @@ with tab_status:
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
 with tab_browse:
+    # Aggregate per handle so the selectbox always has exactly one label per
+    # handle — if a handle has rows with mixed candidate/party values
+    # (e.g. after a partial refresh), the previous .drop_duplicates() left
+    # multiple rows for the same handle and .loc[h] returned a Series, which
+    # crashes st.selectbox with a TypeError.
+    def _label(row):
+        cand = (row['matched_candidate'] or '').strip()
+        party = (row['matched_party'] or '').strip()
+        if cand:
+            return f"@{row['handle']} → {cand} ({party})" if party else f"@{row['handle']} → {cand}"
+        return f"@{row['handle']}"
+
     advertisers_with_ads = (f[['handle', 'matched_candidate', 'matched_party']]
-                             .drop_duplicates().fillna('')
-                             .assign(label=lambda d: d.apply(
-                                 lambda r: f"@{r['handle']} → {r['matched_candidate']} ({r['matched_party']})"
-                                 if r['matched_candidate'] else f"@{r['handle']}", axis=1))
-                             .sort_values('label'))
-    selected_handle = st.selectbox("Pick an advertiser",
-                                    options=advertisers_with_ads['handle'].tolist(),
-                                    format_func=lambda h: advertisers_with_ads.set_index('handle').loc[h, 'label']
-                                                          if h in advertisers_with_ads['handle'].values else h)
+                             .fillna('')
+                             .groupby('handle', as_index=False)
+                             .first())
+    advertisers_with_ads['label'] = advertisers_with_ads.apply(_label, axis=1)
+    advertisers_with_ads = advertisers_with_ads.sort_values('label')
+    _label_lookup = dict(zip(advertisers_with_ads['handle'], advertisers_with_ads['label']))
+    selected_handle = st.selectbox(
+        "Pick an advertiser",
+        options=advertisers_with_ads['handle'].tolist(),
+        format_func=lambda h: _label_lookup.get(h, h),
+    )
     if selected_handle:
         ads = f[f['handle'] == selected_handle].sort_values('first_shown')
         prof_url = f"https://www.tiktok.com/@{selected_handle}" if selected_handle and not str(selected_handle).isdigit() else ""
