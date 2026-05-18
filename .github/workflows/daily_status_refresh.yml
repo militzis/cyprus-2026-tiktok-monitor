@@ -1,0 +1,62 @@
+name: Daily ad-status refresh + report
+
+# Runs every day at 04:00 UTC (07:00 Cyprus time):
+#   1. Calls TikTok /ad/detail/ on ads we haven't checked in 24h
+#   2. Logs status changes to tiktok_ad_status_changes
+#   3. Generates a markdown report at reports/YYYY-MM-DD.md
+#   4. Commits the updated DB + report back to main → Streamlit auto-redeploys
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:    # allow manual run from the Actions tab
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # so we can push the updated DB + report back
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install minimal deps (just what refresh + report need)
+        run: |
+          pip install --quiet requests python-dotenv
+
+      - name: Refresh ad statuses
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          python refresh_ad_statuses.py --since 24h --limit 500
+
+      - name: Generate daily report
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          mkdir -p reports
+          DATE=$(date -u +%Y-%m-%d)
+          python status_change_report.py --since 24h --output "reports/${DATE}.md"
+
+      - name: Commit + push if anything changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add politician_ads_public.db reports/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "auto: daily ad-status refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi

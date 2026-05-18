@@ -141,9 +141,39 @@ c4.metric("Unique candidates matched", f[f['matched_candidate'] != '']['matched_
 
 st.divider()
 
+# ── Derived status: active / inactive / removed ──────────────────────────────
+# Combine TikTok's reported status with date-based inference.
+# Once refresh_ad_statuses.py runs, the `ad_status` column will hold the real
+# value (active / inactive / removed_by_tiktok). For ads we haven't refreshed
+# yet we fall back to a date-derived bucket.
+import numpy as np
+def derive_status(row, today=pd.Timestamp.today()):
+    raw = (row.get('ad_status') or '').lower()
+    if 'removed' in raw or 'violation' in raw:
+        return '🚨 Removed by TikTok'
+    if 'deleted' in raw:
+        return '🗑 Deleted by advertiser'
+    if raw == 'expired':
+        return '⌛ Expired'
+    # date-derived
+    ls = row.get('last_shown')
+    if pd.isna(ls):
+        return '❓ Unknown'
+    days_since = (today - ls).days
+    if days_since <= 7:
+        return '✅ Active (last 7 days)'
+    if days_since <= 30:
+        return '🟡 Recently inactive (8–30 days)'
+    return '⚪ Dormant (30+ days)'
+
+df['derived_status'] = df.apply(derive_status, axis=1)
+# Apply derived status to filtered df too — we need to redo this AFTER filters apply
+f['derived_status'] = f.apply(derive_status, axis=1)
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_overview, tab_party, tab_candidates, tab_browse, tab_transcripts, tab_raw = st.tabs([
-    "📊 Overview", "🏛 By party", "👤 By candidate", "🎬 Browse ads", "📝 Transcript search", "🗂 Raw data",
+tab_overview, tab_party, tab_candidates, tab_status, tab_browse, tab_transcripts, tab_raw = st.tabs([
+    "📊 Overview", "🏛 By party", "👤 By candidate", "🚦 Status & changes",
+    "🎬 Browse ads", "📝 Transcript search", "🗂 Raw data",
 ])
 
 # ── Overview ──────────────────────────────────────────────────────────────────
@@ -287,6 +317,126 @@ with tab_candidates:
                                 st.text(ad['transcript'])
     else:
         st.info("No candidate ads match the current filters. Loosen the sidebar filters to see more.")
+
+# ── Status & changes ──────────────────────────────────────────────────────────
+with tab_status:
+    st.subheader("Ad lifecycle — active vs inactive vs removed")
+    st.caption(
+        "Statuses below combine TikTok's reported ad_status (refreshed by "
+        "`refresh_ad_statuses.py`) with date-derived fallbacks. Until the "
+        "status refresh has been run, ads default to ✅ Active if shown in "
+        "the last 7 days."
+    )
+
+    # KPI row
+    status_counts = f['derived_status'].value_counts()
+    status_order = [
+        '🚨 Removed by TikTok',
+        '🗑 Deleted by advertiser',
+        '⌛ Expired',
+        '✅ Active (last 7 days)',
+        '🟡 Recently inactive (8–30 days)',
+        '⚪ Dormant (30+ days)',
+        '❓ Unknown',
+    ]
+    kpi_cols = st.columns(min(4, len(status_order)))
+    for i, label in enumerate(status_order[:4]):
+        with kpi_cols[i]:
+            st.metric(label, int(status_counts.get(label, 0)))
+
+    st.bar_chart(status_counts.reindex(status_order).dropna(), height=280)
+
+    # Status filter — drill into one bucket
+    st.divider()
+    pick_status = st.selectbox(
+        "Show ads in status",
+        options=['(all)'] + status_order,
+        index=1,   # default to 'Removed by TikTok' for newsworthy stuff
+    )
+    status_filtered = f if pick_status == '(all)' else f[f['derived_status'] == pick_status]
+    st.write(f"**{len(status_filtered)} ads** in `{pick_status}`")
+    if not status_filtered.empty:
+        cols = ['derived_status', 'handle', 'matched_candidate', 'matched_party',
+                'matched_district', 'first_shown', 'last_shown', 'reach_raw',
+                'ad_url', 'profile_url']
+        st.dataframe(status_filtered[cols].sort_values('last_shown', ascending=False),
+                     use_container_width=True, hide_index=True,
+                     column_config={
+                         'ad_url':      st.column_config.LinkColumn('▶ ad', display_text='Open ad'),
+                         'profile_url': st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
+                         'first_shown': st.column_config.DateColumn(),
+                         'last_shown':  st.column_config.DateColumn(),
+                     })
+
+    # ─── Status-change history (from tiktok_ad_status_changes table) ───
+    st.divider()
+    st.subheader("📜 Status-change history")
+    try:
+        conn = sqlite3.connect(DB)
+        changes = pd.read_sql_query("""
+            SELECT sc.observed_at, sc.ad_id, sc.prev_status, sc.new_status,
+                   sc.new_statement, sc.handle,
+                   a.matched_candidate, a.matched_party, a.matched_district, a.ad_url
+            FROM tiktok_ad_status_changes sc
+            LEFT JOIN tiktok_ads a USING(ad_id)
+            ORDER BY sc.observed_at DESC
+            LIMIT 500
+        """, conn)
+        conn.close()
+        changes_loaded = True
+    except Exception:
+        changes = pd.DataFrame()
+        changes_loaded = False
+
+    if not changes_loaded or changes.empty:
+        st.info(
+            "No status-change history yet. Run `python refresh_ad_statuses.py` "
+            "to query TikTok's `/v2/research/adlib/ad/detail/` endpoint for each "
+            "ad and start populating this log. Subsequent runs will detect "
+            "transitions (`active` → `removed_by_tiktok`, etc.) and record them here."
+        )
+    else:
+        st.write(f"**{len(changes)} most-recent transitions** (newest first)")
+        changes['observed_at'] = pd.to_datetime(changes['observed_at'])
+        changes['transition'] = changes['prev_status'].fillna('?') + ' → ' + changes['new_status'].fillna('?')
+        st.dataframe(
+            changes[['observed_at', 'transition', 'handle', 'matched_candidate',
+                     'matched_party', 'new_statement', 'ad_url']],
+            use_container_width=True, hide_index=True,
+            column_config={
+                'observed_at': st.column_config.DatetimeColumn('When (UTC)'),
+                'ad_url':      st.column_config.LinkColumn('▶ ad', display_text='Open ad'),
+                'new_statement': st.column_config.Column('TikTok reason', width='large'),
+            }
+        )
+
+        # Summary by transition type
+        st.divider()
+        cA, cB = st.columns(2)
+        with cA:
+            st.subheader("Transitions by type")
+            st.bar_chart(changes['transition'].value_counts().head(10), height=300)
+        with cB:
+            st.subheader("Changes over time (weekly)")
+            timeline = (changes.set_index('observed_at')
+                              .groupby(pd.Grouper(freq='W'))
+                              .size().reset_index(name='changes'))
+            timeline.columns = ['week', 'changes']
+            st.line_chart(timeline, x='week', y='changes', height=300)
+
+        # Headline: removed by TikTok
+        removed = changes[changes['new_status'] == 'removed_by_tiktok']
+        if not removed.empty:
+            st.divider()
+            st.subheader(f"🚨 {len(removed)} ads have been REMOVED by TikTok")
+            st.dataframe(removed[['observed_at', 'handle', 'matched_candidate',
+                                  'matched_party', 'matched_district',
+                                  'new_statement', 'ad_url']],
+                         use_container_width=True, hide_index=True,
+                         column_config={
+                             'observed_at': st.column_config.DatetimeColumn(),
+                             'ad_url': st.column_config.LinkColumn('▶ ad', display_text='Open ad'),
+                         })
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
 with tab_browse:
