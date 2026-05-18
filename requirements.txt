@@ -9,6 +9,9 @@ python-dotenv>=1.0,<2
 pandas>=2.0,<4
 openpyxl>=3.1,<4
 
+# ── Cross-process locking around DB writes (db_lock.py) ───────────────
+filelock>=3.12,<4
+
 # ── Streamlit dashboard ───────────────────────────────────────────────
 streamlit>=1.30,<2
 altair>=5,<7

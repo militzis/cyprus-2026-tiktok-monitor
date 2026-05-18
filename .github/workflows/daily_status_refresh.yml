@@ -32,7 +32,7 @@ jobs:
       - name: Install minimal deps (just what refresh + report need)
         run: |
           set -euo pipefail
-          pip install --quiet requests python-dotenv
+          pip install --quiet requests python-dotenv filelock
 
       - name: Refresh ad statuses
         env:
