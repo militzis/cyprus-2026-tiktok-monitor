@@ -91,24 +91,23 @@ def extract_select_columns(src: str) -> set[str]:
     # If the SQL contains `{auto_cols}` (or similar) interpolation,
     # try to resolve it by finding `auto_cols = ...` assignment above
     # and substituting its string literal value into the SQL.
+    # We grab the ENTIRE parenthesised ternary block (which can span
+    # multiple lines and contain string-concatenation), then pull every
+    # string literal inside it. Both branches' columns appear in the
+    # union — that's exactly the set load_ads() can SELECT.
     for placeholder in re.findall(r'\{(\w+)\}', sql):
-        # Look for the variable's string-literal definition
-        assigns = re.findall(
-            rf'\b{placeholder}\s*=\s*(?:"([^"]+)"|\'([^\']+)\')',
-            src,
-        )
-        # Also look for ternary forms `var = X if ... else Y` — concat both
-        ternary = re.findall(
-            rf'\b{placeholder}\s*=\s*\(?\s*"([^"]+)"\s*if[^)]*else\s*"([^"]+)"',
-            src,
-        )
         substitutions = []
-        for a in assigns:
-            for v in a:
-                if v:
-                    substitutions.append(v)
-        for tup in ternary:
-            substitutions.extend(t for t in tup if t)
+        # Match `var = (` followed by anything until matching `)`,
+        # tolerating newlines and nested whitespace.
+        m = re.search(rf'\b{placeholder}\s*=\s*\((.*?)\)\s*\n', src, re.DOTALL)
+        if m:
+            block = m.group(1)
+            substitutions = re.findall(r'"([^"]+)"', block)
+        else:
+            # Fall back to a simple `var = "..."` assignment
+            m2 = re.search(rf'\b{placeholder}\s*=\s*"([^"]+)"', src)
+            if m2:
+                substitutions = [m2.group(1)]
         sql = sql.replace('{' + placeholder + '}',
                           ', '.join(substitutions) if substitutions else '')
     # Find the SELECT … FROM segment

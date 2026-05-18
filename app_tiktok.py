@@ -56,6 +56,16 @@ def load_ads():
         else "NULL AS auto_review_verdict, NULL AS auto_review_confidence, "
              "NULL AS auto_review_reason, NULL AS auto_review_at"
     )
+    # Same probe for the spend-estimate columns (compute_spend_estimates.py).
+    # Lets the dashboard load on a fresh deploy that hasn't had the
+    # script run yet.
+    spend_cols = (
+        "estimated_spend_eur_low, estimated_spend_eur_mid, estimated_spend_eur_high"
+        if {'estimated_spend_eur_low', 'estimated_spend_eur_mid',
+            'estimated_spend_eur_high'}.issubset(existing)
+        else "NULL AS estimated_spend_eur_low, NULL AS estimated_spend_eur_mid, "
+             "NULL AS estimated_spend_eur_high"
+    )
     df = pd.read_sql_query(f"""
         SELECT advertiser_id, advertiser_disclosed_name AS handle,
                matched_candidate, matched_party, matched_district,
@@ -63,7 +73,8 @@ def load_ads():
                reach_raw, times_shown_lower_bound, times_shown_upper_bound,
                ad_funded_by, videos_json, image_urls_json,
                ad_url, transcript, match_type, checked_at,
-               {auto_cols}
+               {auto_cols},
+               {spend_cols}
         FROM tiktok_ads
     """, c)
     c.close()
@@ -242,6 +253,32 @@ else:
             f"{_errs or 0} API error(s)."
         )
 
+# ── Estimated total spend banner ──────────────────────────────────────────────
+# Headline number — turns the abstract "TikTok runs banned political ads in
+# Cyprus" into a quotable € figure. Mid estimate is the recommended single
+# number; the low/high bounds are shown so readers know the precision limit.
+def _spend_sum(col):
+    s = f[col].sum() if col in f.columns else 0
+    try:
+        return int(s) if pd.notna(s) else 0
+    except (TypeError, ValueError):
+        return 0
+
+_spend_low  = _spend_sum('estimated_spend_eur_low')
+_spend_mid  = _spend_sum('estimated_spend_eur_mid')
+_spend_high = _spend_sum('estimated_spend_eur_high')
+
+if _spend_mid > 0:
+    st.info(
+        f"💶 **Estimated political-ad spend on TikTok in Cyprus:** "
+        f"**€{_spend_mid:,}** (range €{_spend_low:,} – €{_spend_high:,}). "
+        f"TikTok bans paid political ads globally — every euro shown here is "
+        f"a likely policy violation.  "
+        f"[*Methodology: TikTok's published reach buckets × EU commercial CPM "
+        f"€3-€8/k.*]",
+        icon="💶",
+    )
+
 # ── KPI row ───────────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Total ads", len(f))
@@ -292,8 +329,8 @@ df['derived_status'] = df.apply(derive_status, axis=1)
 f['derived_status'] = f.apply(derive_status, axis=1)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_overview, tab_party, tab_candidates, tab_status, tab_review, tab_browse, tab_transcripts, tab_raw = st.tabs([
-    "📊 Overview", "🏛 By party", "👤 By candidate", "🚦 Status & changes",
+tab_overview, tab_spend, tab_party, tab_candidates, tab_status, tab_review, tab_browse, tab_transcripts, tab_raw = st.tabs([
+    "📊 Overview", "💶 Spend", "🏛 By party", "👤 By candidate", "🚦 Status & changes",
     "🔍 Review queue",
     "🎬 Browse ads", "📝 Transcript search", "🗂 Raw data",
 ])
@@ -333,6 +370,107 @@ with tab_overview:
         st.subheader("Reach distribution")
         reach_counts = f['reach_raw'].value_counts().head(10)
         st.bar_chart(reach_counts, height=300)
+
+# ── Spend (estimated €) ───────────────────────────────────────────────────────
+# Aggregates the per-ad estimates into per-party / per-candidate /
+# per-month views so the data tells a story instead of being 524 rows.
+# Every chart on this page is built on the mid-CPM estimate (€5/k). The
+# low/high range is reported on the banner at the top of the page.
+with tab_spend:
+    st.subheader("Estimated political-ad spend on TikTok in Cyprus")
+    st.caption(
+        f"All numbers below are **estimates** computed from TikTok's published "
+        f"reach buckets × EU commercial CPM (€{3}/k low — €{5}/k mid — €{8}/k high). "
+        f"TikTok bans paid political ads globally; reaches reported here are "
+        f"likely policy violations regardless of who paid for them. The mid "
+        f"figure is the default for ranking; bounds are shown to communicate "
+        f"the precision limit (TikTok's reach buckets are wide — e.g. "
+        f"'10K-100K' is a 10× range)."
+    )
+
+    if 'estimated_spend_eur_mid' not in f.columns or f['estimated_spend_eur_mid'].sum() == 0:
+        st.warning(
+            "No spend estimates in the DB. Run "
+            "`python compute_spend_estimates.py` against this DB to populate them."
+        )
+    else:
+        # Banner-level totals
+        col_l, col_m, col_h = st.columns(3)
+        col_l.metric("Conservative (low)",  f"€{_spend_sum('estimated_spend_eur_low'):,}",
+                     help="Sums lower reach bound × €3 CPM. Defensible floor.")
+        col_m.metric("Best estimate (mid)", f"€{_spend_sum('estimated_spend_eur_mid'):,}",
+                     help="Sums mid reach × €5 CPM. Use for rankings.")
+        col_h.metric("Upper bound (high)",  f"€{_spend_sum('estimated_spend_eur_high'):,}",
+                     help="Sums upper reach bound × €8 CPM. Use to highlight outliers.")
+
+        st.divider()
+
+        # ─── Spend by party ───────────────────────────────────────────
+        st.markdown("### Spend by party")
+        real_party_mask = ~f['matched_party'].fillna('').str.startswith('[content-keyword') \
+                         & f['matched_party'].fillna('').ne('')
+        party_spend = (f[real_party_mask]
+                        .groupby('matched_party', as_index=False)
+                        .agg(total_eur=('estimated_spend_eur_mid', 'sum'),
+                             low_eur  =('estimated_spend_eur_low',  'sum'),
+                             high_eur =('estimated_spend_eur_high', 'sum'),
+                             ads      =('ad_id', 'count'),
+                             advertisers=('advertiser_id', 'nunique'))
+                        .sort_values('total_eur', ascending=False))
+        if not party_spend.empty:
+            st.bar_chart(party_spend.set_index('matched_party')['total_eur'], height=320)
+            party_spend.columns = ['Party', '€ mid', '€ low', '€ high', 'Ads', 'Advertisers']
+            party_spend[['€ mid', '€ low', '€ high']] = party_spend[['€ mid', '€ low', '€ high']].astype(int)
+            st.dataframe(party_spend, use_container_width=True, hide_index=True,
+                         column_config={
+                             '€ mid':  st.column_config.NumberColumn(format='€%d'),
+                             '€ low':  st.column_config.NumberColumn(format='€%d'),
+                             '€ high': st.column_config.NumberColumn(format='€%d'),
+                         })
+
+        st.divider()
+
+        # ─── Top-spending candidates ──────────────────────────────────
+        st.markdown("### Top spenders (per candidate)")
+        cand_mask = f['matched_candidate'].fillna('').ne('') & \
+                    f['match_type'].eq('manual_resume')
+        cand_spend = (f[cand_mask]
+                       .groupby(['matched_candidate', 'matched_party', 'matched_district', 'handle'],
+                                as_index=False)
+                       .agg(total_eur=('estimated_spend_eur_mid', 'sum'),
+                            low_eur  =('estimated_spend_eur_low',  'sum'),
+                            high_eur =('estimated_spend_eur_high', 'sum'),
+                            ads      =('ad_id', 'count'))
+                       .sort_values('total_eur', ascending=False)
+                       .head(30))
+        cand_spend['profile'] = cand_spend['handle'].apply(
+            lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+        st.dataframe(
+            cand_spend[['matched_candidate', 'matched_party', 'matched_district',
+                        'ads', 'total_eur', 'low_eur', 'high_eur', 'profile']],
+            use_container_width=True, hide_index=True,
+            column_config={
+                'total_eur': st.column_config.NumberColumn('€ mid',  format='€%d'),
+                'low_eur':   st.column_config.NumberColumn('€ low',  format='€%d'),
+                'high_eur':  st.column_config.NumberColumn('€ high', format='€%d'),
+                'profile':   st.column_config.LinkColumn('👤', display_text='Open'),
+            })
+
+        st.divider()
+
+        # ─── Spend over time (weekly) ─────────────────────────────────
+        st.markdown("### Estimated spend over time (weekly)")
+        weekly = (f.set_index('first_shown')
+                   .groupby(pd.Grouper(freq='W'))
+                   .agg(eur=('estimated_spend_eur_mid', 'sum'),
+                        ads=('ad_id', 'count'))
+                   .reset_index())
+        if not weekly.empty:
+            weekly.columns = ['week', '€ mid spend', 'ads launched']
+            st.line_chart(weekly.set_index('week')['€ mid spend'], height=280)
+            st.caption("Each point = sum of mid-CPM estimates for ads first shown in that week. "
+                       "Useful for spotting spend surges around debates, scandals, "
+                       "or the election-silence window.")
 
 # ── By party ──────────────────────────────────────────────────────────────────
 with tab_party:
