@@ -32,7 +32,18 @@ jobs:
       - name: Install minimal deps (just what refresh + report need)
         run: |
           set -euo pipefail
-          pip install --quiet requests python-dotenv filelock
+          pip install --quiet requests python-dotenv filelock pandas
+
+      # Run the test suite BEFORE touching the live DB or hitting the API.
+      # If a recent commit broke load_ads()/derive_status()/numeric-handle
+      # quirk handling, this catches it before the cron does production
+      # damage (e.g. writing garbage rows from a regressed discover script).
+      - name: Run regression tests
+        run: |
+          set -euo pipefail
+          python tests/test_pipeline.py
+          python tests/test_dashboard_select_completeness.py
+          python tests/test_shared_files_sync.py
 
       - name: Refresh ad statuses
         env:
