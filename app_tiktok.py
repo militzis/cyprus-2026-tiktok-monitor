@@ -386,9 +386,10 @@ with tab_candidates:
                         st.write(f"**Status:** {ad['ad_status']}")
                         st.write(f"**Days active:** {ad['days_active']}")
                         st.write(f"**Reach:** {ad['reach_raw']}")
-                        if ad.get('transcript') and len(ad['transcript']) > 20:
+                        transcript = ad['transcript'] if pd.notna(ad.get('transcript')) else ''
+                        if isinstance(transcript, str) and len(transcript) > 20:
                             with st.expander("📝 Transcript"):
-                                st.text(ad['transcript'])
+                                st.text(transcript)
     else:
         st.info("No candidate ads match the current filters. Loosen the sidebar filters to see more.")
 
@@ -577,13 +578,18 @@ with tab_browse:
                     st.write(f"**Status:** {ad['ad_status']}")
                     st.write(f"**Days active:** {ad['days_active']}")
                     st.write(f"**Reach bucket:** {ad['reach_raw']}")
-                    if ad.get('matched_candidate'):
-                        st.write(f"**Candidate:** {ad['matched_candidate']}")
-                        st.write(f"**Party:** {ad['matched_party']}")
-                        st.write(f"**District:** {ad['matched_district']}")
-                    if ad.get('transcript') and len(ad['transcript']) > 20:
+                    # Use pd.notna() — pandas NaN is truthy but breaks len()/string ops
+                    cand = ad['matched_candidate'] if pd.notna(ad.get('matched_candidate')) else ''
+                    if cand:
+                        st.write(f"**Candidate:** {cand}")
+                        party = ad['matched_party'] if pd.notna(ad.get('matched_party')) else ''
+                        district = ad['matched_district'] if pd.notna(ad.get('matched_district')) else ''
+                        if party:    st.write(f"**Party:** {party}")
+                        if district: st.write(f"**District:** {district}")
+                    transcript = ad['transcript'] if pd.notna(ad.get('transcript')) else ''
+                    if isinstance(transcript, str) and len(transcript) > 20:
                         st.write("**Transcript:**")
-                        st.text_area("", ad['transcript'], height=200,
+                        st.text_area("", transcript, height=200,
                                      key=f"tx_{ad['ad_id']}", label_visibility='collapsed')
 
 # ── Transcript search ─────────────────────────────────────────────────────────
@@ -594,9 +600,11 @@ with tab_transcripts:
         hits = f[mask]
         st.write(f"**{len(hits)} ads** mention `{q}`")
         for _, ad in hits.head(50).iterrows():
-            with st.expander(f"@{ad['handle']}  ·  {ad['matched_candidate'] or '(no candidate)'}  ·  {ad['first_shown'].date() if pd.notna(ad['first_shown']) else '?'}"):
+            cand_label = ad['matched_candidate'] if pd.notna(ad.get('matched_candidate')) and ad.get('matched_candidate') else '(no candidate)'
+            with st.expander(f"@{ad['handle']}  ·  {cand_label}  ·  {ad['first_shown'].date() if pd.notna(ad['first_shown']) else '?'}"):
                 # Show snippet around the match
-                txt = ad['transcript'] or ''
+                txt = ad['transcript'] if pd.notna(ad.get('transcript')) else ''
+                if not isinstance(txt, str): txt = ''
                 idx = txt.lower().find(q.lower())
                 if idx >= 0:
                     start = max(0, idx - 80)
