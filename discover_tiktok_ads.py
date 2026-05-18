@@ -738,11 +738,27 @@ def run(args):
             lb, ub = parse_reach(reach_raw)
             ad_id = str(ad_obj.get('id') or '')
 
+            # Deleted-account quirk: when the TikTok account is gone, the
+            # ad endpoint returns the funder numeric ID in both business_name
+            # and paid_for_by, instead of the readable handle. Detect that and
+            # fall back to the handle we got from the advertiser/query
+            # endpoint (which still works for deleted accounts).
+            api_business_name = av_obj.get('business_name') or ''
+            api_paid_for_by   = av_obj.get('paid_for_by') or ''
+            disclosed_name = (
+                name if api_business_name.isdigit() or not api_business_name
+                else api_business_name
+            )
+            funded_by_value = (
+                None if api_paid_for_by.isdigit() and api_paid_for_by == api_business_name
+                else api_paid_for_by
+            )
+
             row = {
                 'ad_id':                     ad_id,
                 'advertiser_id':             str(av_obj.get('business_id') or bid),
-                'advertiser_disclosed_name': av_obj.get('business_name') or name,
-                'ad_funded_by':              av_obj.get('paid_for_by'),
+                'advertiser_disclosed_name': disclosed_name,
+                'ad_funded_by':              funded_by_value,
                 'country_code':              'CY',
                 'ad_url':                    f"https://library.tiktok.com/ads/detail/?ad_id={ad_id}" if ad_id else None,
                 'first_shown':               _fmt_date(ad_obj.get('first_shown_date', '')),
