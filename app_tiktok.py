@@ -185,11 +185,16 @@ st.divider()
 # yet we fall back to a date-derived bucket.
 import numpy as np
 def derive_status(row, today=pd.Timestamp.today()):
-    raw = (row.get('ad_status') or '').lower()
+    # NaN/NaT-safe field access: pandas iterrows() can return NaT or NaN
+    # for missing fields; both are truthy in `X or ''` (so the fallback
+    # doesn't kick in) but neither has .lower(). Use pd.notna() guards.
+    raw_v  = row.get('ad_status')
+    stmt_v = row.get('status_statement')
+    raw  = (raw_v  if pd.notna(raw_v)  and isinstance(raw_v,  str) else '').lower()
     # TikTok takedowns: status often stays 'inactive' but the violation note
     # appears in status_statement ("Removed from TikTok due to a violation of
     # TikTok's terms"). Check both so we don't miss enforcement events.
-    stmt = (row.get('status_statement') or '').lower()
+    stmt = (stmt_v if pd.notna(stmt_v) and isinstance(stmt_v, str) else '').lower()
     if 'removed' in raw or 'removed' in stmt or 'violation' in raw or 'violation' in stmt:
         return '🚨 Removed by TikTok'
     if 'deleted' in raw or 'deleted_by_advertiser' in stmt:

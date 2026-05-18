@@ -77,6 +77,16 @@ def refresh(args):
     if not t.CLIENT_KEY or not t.CLIENT_SECRET:
         sys.exit("ERROR: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET missing from .env")
 
+    # Acquire exclusive write lock on this DB file before any UPDATE/INSERT.
+    # Prevents concurrent corruption between this script and discover_*.py
+    # if both happen to run against the same DB (e.g. when POLITICIAN_ADS_DB
+    # points at the local master rather than the deploy public DB).
+    from db_lock import db_lock
+    with db_lock(DB):
+        _refresh_impl(args)
+
+
+def _refresh_impl(args):
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)

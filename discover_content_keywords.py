@@ -251,24 +251,17 @@ for ad_id, rec in side['found_ads'].items():
     ads_by_bid[rec['bid']].append(rec)
 
 saved_total = 0
+from tiktok_api import resolve_disclosed_name
 for bid_str, ad_records in ads_by_bid.items():
     if bid_str in KNOWN_BIDS:
         continue   # skip — we already track this advertiser
     rows = []
-    # Deleted-account API quirk: TikTok's ad endpoint sometimes returns the
-    # funder's numeric ID in `business_name` instead of the readable @handle —
-    # not only for deleted accounts but also for LIVE accounts with separate
-    # funder entities (observed for @cmountouckos, @marioshaperis, @slow_job,
-    # @tolkerscy, @stavrosefstathiou). Numeric "names" pollute downstream
-    # triage and look like ghost advertisers. If business_name is purely
-    # digits, fall back to the bid so at least we don't double-track the
-    # same advertiser under two identities. The real handle has to be
-    # back-filled via Playwright bioscan or the ad/query search_term lookup.
-    api_name = (ad_records[0].get('business_name') or '').strip()
-    if api_name.isdigit() or not api_name:
-        handle_or_id = bid_str
-    else:
-        handle_or_id = api_name
+    # Numeric-business_name quirk — centralized in tiktok_api.py.
+    # Sweep has no /advertiser/query/ result to fall back to (it found
+    # this advertiser via keyword), so the last-resort fallback is the
+    # business_id stringified. The real handle gets back-filled later
+    # via Playwright bioscan or a search_term lookup.
+    handle_or_id = resolve_disclosed_name(ad_records[0], fallback=bid_str)
     hit_terms_set = set()
     for rec in ad_records:
         hit_terms_set.update(rec.get('hit_terms', []))

@@ -512,7 +512,21 @@ def upsert_rows(rows: list[dict]) -> int:
     so non-listed columns (e.g. transcript, targeting_age) are preserved
     when re-upserting an existing row — the old positional INSERT OR REPLACE
     silently NULL'd those out, which is bad when re-fetching after schema growth.
+
+    Acquires a cross-process lock on the DB file so concurrent runs
+    (e.g. manual discover + cron refresh) serialize cleanly. SQLite's
+    own file lock prevents corruption, but two writers can still race
+    on the side caches and lose UPDATEs to the same ad_id.
     """
+    from db_lock import db_lock
+    with db_lock(DB_PATH):
+        return _upsert_rows_unlocked(rows)
+
+
+def _upsert_rows_unlocked(rows: list[dict]) -> int:
+    """Inner upsert without lock acquisition. Called by upsert_rows()
+    or by callers that already hold the lock (e.g. when batching multiple
+    upserts inside one outer transaction)."""
     conn  = sqlite3.connect(DB_PATH)
     now   = datetime.now(timezone.utc).isoformat()
     cols       = ",".join(_UPSERT_COLS)
@@ -738,21 +752,12 @@ def run(args):
             lb, ub = parse_reach(reach_raw)
             ad_id = str(ad_obj.get('id') or '')
 
-            # Deleted-account quirk: when the TikTok account is gone, the
-            # ad endpoint returns the funder numeric ID in both business_name
-            # and paid_for_by, instead of the readable handle. Detect that and
-            # fall back to the handle we got from the advertiser/query
-            # endpoint (which still works for deleted accounts).
-            api_business_name = av_obj.get('business_name') or ''
-            api_paid_for_by   = av_obj.get('paid_for_by') or ''
-            disclosed_name = (
-                name if api_business_name.isdigit() or not api_business_name
-                else api_business_name
-            )
-            funded_by_value = (
-                None if api_paid_for_by.isdigit() and api_paid_for_by == api_business_name
-                else api_paid_for_by
-            )
+            # Numeric-business_name quirk — see tiktok_api.resolve_disclosed_name
+            # docstring for the full explanation. We centralize the workaround
+            # in tiktok_api.py so every reader/writer uses the same logic.
+            from tiktok_api import resolve_disclosed_name, resolve_funded_by
+            disclosed_name  = resolve_disclosed_name(av_obj, fallback=name)
+            funded_by_value = resolve_funded_by(av_obj)
 
             row = {
                 'ad_id':                     ad_id,
