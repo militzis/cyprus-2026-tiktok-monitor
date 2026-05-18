@@ -281,8 +281,9 @@ df['derived_status'] = df.apply(derive_status, axis=1)
 f['derived_status'] = f.apply(derive_status, axis=1)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_overview, tab_party, tab_candidates, tab_status, tab_browse, tab_transcripts, tab_raw = st.tabs([
+tab_overview, tab_party, tab_candidates, tab_status, tab_review, tab_browse, tab_transcripts, tab_raw = st.tabs([
     "📊 Overview", "🏛 By party", "👤 By candidate", "🚦 Status & changes",
+    "🔍 Review queue",
     "🎬 Browse ads", "📝 Transcript search", "🗂 Raw data",
 ])
 
@@ -617,6 +618,125 @@ with tab_status:
                              'cdn_url':       st.column_config.LinkColumn('🎬 creative', display_text='Open creative'),
                              'new_statement': st.column_config.Column('TikTok reason', width='large'),
                          })
+
+# ── Review queue ──────────────────────────────────────────────────────────────
+# Surfaces handles that warrant a human second-opinion check, because each
+# of them belongs to the bug class we hit repeatedly today:
+#   - @petrouiakovos / @champis_me_p / @ttoppouzi / @marioshaperis were all
+#     classified as candidates/relevant, but turned out to be false
+#     positives the user caught only by chance.
+#   - High-reach political-tier ads with NO transcript yet are exactly the
+#     ones a reviewer should spot-check.
+#
+# Three sections, lightest first:
+#   A. "Promoted recently" — anything moved into a political tier in the
+#      last 14 days. Even one wrong promotion has outsized impact.
+#   B. "Lower-confidence + high reach" — commentator/podcast/satirist/etc.
+#      with at least one ad in the 10K-100K bucket or higher. Cheap signals
+#      we might've misclassified.
+#   C. "Promoted but never transcribed" — manual_resume handles whose ads
+#      have no Whisper transcript yet. Often means we're trusting the
+#      handle match without ever looking at the actual content.
+with tab_review:
+    st.subheader("🔍 Handles worth a second look")
+    st.caption(
+        "Three review buckets, each surfacing a different class of "
+        "potential false-positive. Use `python promote.py` to confirm or "
+        "`python flag.py` to demote, then rebuild the public DB."
+    )
+
+    # Shared: per-handle aggregate that's useful in every section
+    handles = (f.groupby('handle', as_index=False)
+                .agg(matched_candidate=('matched_candidate', 'first'),
+                     matched_party    =('matched_party',     'first'),
+                     matched_district =('matched_district',  'first'),
+                     match_type       =('match_type',        'first'),
+                     ads              =('ad_id', 'count'),
+                     max_reach_upper  =('times_shown_upper_bound', 'max'),
+                     first_seen       =('first_shown',       'min'),
+                     last_seen        =('last_shown',        'max'),
+                     has_transcript   =('transcript', lambda s: s.notna().any())))
+    handles['profile_url'] = handles['handle'].apply(
+        lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+
+    LOWER_CONFIDENCE_TIERS = {
+        'commentator', 'podcast', 'satirist', 'news_outlet',
+        'politician_non_candidate', 'party_supporter', 'party_account',
+    }
+    REVIEW_COLS = ['handle', 'match_type', 'matched_candidate', 'matched_party',
+                   'matched_district', 'ads', 'max_reach_upper',
+                   'first_seen', 'last_seen', 'profile_url']
+    REVIEW_COL_CFG = {
+        'profile_url':     st.column_config.LinkColumn('👤 profile', display_text='Open'),
+        'max_reach_upper': st.column_config.NumberColumn('reach ≥', format='%d'),
+        'first_seen':      st.column_config.DateColumn(),
+        'last_seen':       st.column_config.DateColumn(),
+    }
+
+    # ─── A. Promoted recently ──────────────────────────────────────────
+    st.divider()
+    st.markdown("### A. Promoted recently (last 14 days)")
+    st.caption(
+        "Anything moved into a political-content tier (anything except "
+        "`content_keyword`/`likely_false_positive_*`) within the last 14 "
+        "days. New promotions are the easiest place for a false positive "
+        "to slip through."
+    )
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=14)
+    recent_promotions = handles[
+        (handles['match_type'] != 'content_keyword') &
+        ~handles['match_type'].fillna('').str.startswith('likely_false_positive') &
+        (handles['last_seen'] >= cutoff)
+    ].sort_values('last_seen', ascending=False)
+    if recent_promotions.empty:
+        st.info("No promotions in the last 14 days.")
+    else:
+        st.write(f"**{len(recent_promotions)} handles** to spot-check:")
+        st.dataframe(recent_promotions[REVIEW_COLS],
+                     use_container_width=True, hide_index=True,
+                     column_config=REVIEW_COL_CFG)
+
+    # ─── B. Lower-confidence tier + high reach ────────────────────────
+    st.divider()
+    st.markdown("### B. Lower-confidence tier with high reach")
+    st.caption(
+        "Handles classified as commentator/podcast/satirist/news_outlet/"
+        "supporter/party_account etc. AND running at least one ad in the "
+        "10K-100K bucket or higher. If a misclassified business slipped "
+        "in here it'd be reaching tens of thousands of people."
+    )
+    suspect = handles[
+        handles['match_type'].isin(LOWER_CONFIDENCE_TIERS) &
+        (handles['max_reach_upper'] >= 10_000)
+    ].sort_values('max_reach_upper', ascending=False)
+    if suspect.empty:
+        st.info("Nothing in lower-confidence tiers with reach ≥ 10K.")
+    else:
+        st.write(f"**{len(suspect)} handles** with high reach in lower-confidence tiers:")
+        st.dataframe(suspect[REVIEW_COLS],
+                     use_container_width=True, hide_index=True,
+                     column_config=REVIEW_COL_CFG)
+
+    # ─── C. Promoted but never transcribed ────────────────────────────
+    st.divider()
+    st.markdown("### C. Confirmed candidates without any transcript")
+    st.caption(
+        "`manual_resume` handles whose ads have never been transcribed by "
+        "Whisper. Without a transcript we're trusting the handle-to-"
+        "candidate name match without seeing the actual ad content. "
+        "Run `python transcribe_tiktok_creatives.py` to fill these in."
+    )
+    untranscribed = handles[
+        (handles['match_type'] == 'manual_resume') &
+        (~handles['has_transcript'])
+    ].sort_values('ads', ascending=False)
+    if untranscribed.empty:
+        st.info("Every confirmed candidate has at least one transcribed ad.")
+    else:
+        st.write(f"**{len(untranscribed)} confirmed candidates** with zero transcripts:")
+        st.dataframe(untranscribed[REVIEW_COLS],
+                     use_container_width=True, hide_index=True,
+                     column_config=REVIEW_COL_CFG)
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
 with tab_browse:
