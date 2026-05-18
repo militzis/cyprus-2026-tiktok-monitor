@@ -86,11 +86,46 @@ candidates_df = load_candidates()
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 st.sidebar.header("Filters")
 
+# Human-readable category groupings — these match what's in the DB's match_type
+CATEGORY_LABELS = {
+    'manual_resume':                    '🟢 Candidate',
+    'party_account':                    '🟣 Party account',
+    'party_supporter':                  '🟡 Party supporter',
+    'party_coordinator':                '🟣 Party coordinator',
+    'political_movement':               '🔴 Political movement',
+    'politician_non_candidate':         '🔵 Politician (non-candidate)',
+    'commentator':                      '🟠 Commentator',
+    'news_outlet':                      '🟠 News outlet',
+    'podcast':                          '🟠 Podcast',
+    'satirist':                         '🟠 Satirist',
+    'needs_profile_verification':       '❓ Needs verification',
+    'content_keyword':                  '⚪ Content-keyword hit (unverified)',
+    'likely_false_positive_business':   '✗ False positive (business)',
+    'likely_false_positive_personal':   '✗ False positive (personal)',
+    'likely_false_positive_homonym':    '✗ False positive (homonym)',
+}
+# Default: show everything in the political ecosystem (candidates, parties,
+# supporters, media, movements). Hide content-keyword limbo + false positives.
+DEFAULT_CATEGORIES = [
+    'manual_resume', 'party_account', 'party_supporter', 'party_coordinator',
+    'political_movement', 'politician_non_candidate',
+    'commentator', 'news_outlet', 'podcast', 'satirist',
+]
+
 all_match_types = sorted(df['match_type'].dropna().unique().tolist())
-default_match = [m for m in all_match_types if m == 'manual_resume']
+default_match = [m for m in all_match_types if m in DEFAULT_CATEGORIES]
 selected_match = st.sidebar.multiselect(
-    "Match tier", all_match_types, default=default_match,
-    help="manual_resume = confirmed political candidate. content_keyword* = found via keyword search, may include news/podcasts/satire.",
+    "Category",
+    all_match_types,
+    default=default_match,
+    format_func=lambda m: CATEGORY_LABELS.get(m, m),
+    help=(
+        "🟢 Candidate = confirmed on the ballot.  "
+        "🟣 Party account = official party HQ.  "
+        "🟡 Party supporter = activist account.  "
+        "🟠 Media = commentator / news / podcast / satire.  "
+        "⚪ Content-keyword = caught by sweep, not yet verified."
+    ),
 )
 
 parties = ['(all)'] + sorted([p for p in df['matched_party'].dropna().unique()
@@ -133,11 +168,13 @@ st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.column
            f"DB: `{DB}`")
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Filtered ads", len(f))
 c2.metric("Unique advertisers", f['advertiser_id'].nunique())
-c3.metric("Active right now", (f['ad_status'] == 'active').sum())
-c4.metric("Unique candidates matched", f[f['matched_candidate'] != '']['matched_candidate'].nunique())
+c3.metric("🟢 Candidates", f[f['match_type'] == 'manual_resume']['advertiser_id'].nunique())
+c4.metric("🟣 Party accounts", f[f['match_type'].isin(['party_account', 'party_coordinator'])]['advertiser_id'].nunique())
+c5.metric("🟡 Supporters", f[f['match_type'] == 'party_supporter']['advertiser_id'].nunique())
+c6.metric("🟠 Media/Commentators", f[f['match_type'].isin(['commentator', 'news_outlet', 'podcast', 'satirist'])]['advertiser_id'].nunique())
 
 st.divider()
 
@@ -214,22 +251,59 @@ with tab_overview:
 
 # ── By party ──────────────────────────────────────────────────────────────────
 with tab_party:
-    st.subheader("Party coverage")
-    # only count rows where matched_party is a real party (not the content-keyword placeholder)
-    real_party = f[~f['matched_party'].fillna('').str.startswith('[content-keyword')]
-    party_stats = (real_party.groupby('matched_party')
-                   .agg(advertisers=('advertiser_id', 'nunique'),
-                        ads=('ad_id', 'count'),
-                        candidates=('matched_candidate', lambda s: s.nunique() if s.any() else 0))
-                   .reset_index().sort_values('ads', ascending=False))
+    st.subheader("Party-by-party ecosystem")
+    real_party = f[~f['matched_party'].fillna('').str.startswith('[content-keyword')
+                   & f['matched_party'].notna() & (f['matched_party'] != '')]
+
+    # Per-party rollup with breakdown by category
+    def per_party_breakdown(grp):
+        return pd.Series({
+            'ads':              len(grp),
+            'advertisers':      grp['advertiser_id'].nunique(),
+            'candidates':       grp[grp['match_type'] == 'manual_resume']['matched_candidate'].nunique(),
+            'party_accounts':   grp[grp['match_type'].isin(['party_account','party_coordinator'])]['advertiser_id'].nunique(),
+            'supporters':       grp[grp['match_type'] == 'party_supporter']['advertiser_id'].nunique(),
+            'commentators':     grp[grp['match_type'].isin(['commentator','news_outlet','podcast','satirist'])]['advertiser_id'].nunique(),
+        })
+    party_stats = real_party.groupby('matched_party').apply(per_party_breakdown).reset_index()
     if not candidates_df.empty:
         roster = candidates_df.groupby('party').size().reset_index(name='roster_size')
         party_stats = party_stats.merge(roster, left_on='matched_party', right_on='party', how='left').drop(columns=['party'])
-        party_stats['% with TikTok ads'] = (
-            party_stats['candidates'] / party_stats['roster_size'] * 100).round(1)
+        party_stats['% roster with ads'] = (
+            party_stats['candidates'] / party_stats['roster_size'].replace(0, np.nan) * 100).round(1)
+    party_stats = party_stats.sort_values('ads', ascending=False)
     st.dataframe(party_stats, use_container_width=True, hide_index=True)
+
     if not party_stats.empty:
         st.bar_chart(party_stats.set_index('matched_party')['ads'], height=320)
+
+    # ── Drill into one party — see candidates + party accounts + supporters ──
+    st.divider()
+    st.subheader("📂 Drill into one party")
+    party_options = ['(pick a party)'] + party_stats['matched_party'].tolist()
+    picked_party = st.selectbox("Pick a party to see its full TikTok presence", options=party_options)
+    if picked_party != '(pick a party)':
+        p_df = real_party[real_party['matched_party'] == picked_party]
+        for label, cat_filter in [
+            ("🟢 Candidates",        ['manual_resume']),
+            ("🟣 Party accounts",    ['party_account', 'party_coordinator']),
+            ("🟡 Supporters",        ['party_supporter']),
+            ("🟠 Aligned media",     ['commentator', 'news_outlet', 'podcast', 'satirist']),
+        ]:
+            sub = p_df[p_df['match_type'].isin(cat_filter)]
+            adv = (sub.drop_duplicates('advertiser_id')
+                       .groupby(['handle', 'matched_candidate', 'matched_district'], dropna=False)
+                       .agg(ads=('ad_id', 'count'),
+                            last=('last_shown', 'max'))
+                       .reset_index().sort_values('ads', ascending=False))
+            if adv.empty: continue
+            st.write(f"**{label} — {len(adv)} accounts**")
+            adv['profile'] = adv['handle'].apply(
+                lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+            st.dataframe(adv, use_container_width=True, hide_index=True,
+                         column_config={
+                             'profile': st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
+                         })
 
 # ── By candidate ──────────────────────────────────────────────────────────────
 with tab_candidates:
