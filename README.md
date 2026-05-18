@@ -1,5 +1,11 @@
 # Cyprus 2026 — TikTok Political Ad Monitor
 
+[![Live dashboard](https://img.shields.io/badge/dashboard-live-success?logo=streamlit&logoColor=white)](https://cyprus-2026-tiktok.streamlit.app/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
+
+🔗 **Live dashboard → https://cyprus-2026-tiktok.streamlit.app/**
+
 End-to-end pipeline + Streamlit dashboard tracking political advertising on TikTok
 ahead of the **Cyprus 2026 parliamentary elections**.
 
@@ -24,9 +30,6 @@ dashboard.
 | `candidates.csv` | Public ballot data — 746 candidates across 19 parties |
 | `politician_ads_public.db` | Sanitised SQLite snapshot — 482 ads, 73 advertisers (candidates + party accounts + media) |
 
-## Live dashboard
-
-→ **https://cyprus-2026-tiktok.streamlit.app/** *(set up via Streamlit Community Cloud)*
 
 ## Local setup
 
