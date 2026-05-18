@@ -224,11 +224,11 @@ def load_last_health():
 
 _h, _h_err = load_last_health()
 if _h is None:
-    st.warning(
-        f"⚠ **Pipeline health: unknown.** {_h_err or 'No row available.'} "
-        "If this persists for >24h, the daily workflow has never run "
-        "successfully."
-    )
+    # Silent — when there's no health row yet (fresh deploy / first cron),
+    # we don't want a yellow banner cluttering the page. The dashboard's
+    # "Last DB write" caption already tells the user when data was last
+    # touched. Red banners (failure/stale) still fire below.
+    pass
 else:
     _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
     _fin_ts = pd.to_datetime(_fin)
