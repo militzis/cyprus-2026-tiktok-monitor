@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets — NEVER commit these
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.token
+*.key
+credentials.json
+secrets.json
+auth.json
+client_secret*.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live data — too large or contains personal info on flagged accounts
+# ─────────────────────────────────────────────────────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+politician_ads.db
+ads.db
+# DO commit the curated public snapshot:
+!politician_ads_public.db
+
+# Discovery caches (regenerable, contain BIDs of FP-flagged accounts)
+*.json
+# But DO commit a small allow-list of public config files:
+!candidates.csv
+!candidates_mt.csv
+!fetch_state.json
+!fetch_state_mt.json
+!page_blocklist.json
+!page_blocklist_mt.json
+
+# Media (creatives are huge — multiple GBs)
+*.mp4
+*.mov
+*.avi
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.pdf
+
+# Excel exports (regenerable from DB)
+*.xlsx
+*.xls
+
+# Logs
+*.log
+discovery_run_*.log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Playwright user-data directories (browser profiles)
+# ─────────────────────────────────────────────────────────────────────────────
+.pw_*/
+.pw_profile_*/
+.pw_haul_*/
+pw_data/
+playwright_profile/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ad-hoc throwaway scripts (anything starting with _ in this project)
+# These are one-shot diagnostic / promote / migration scripts not meant for repo
+# ─────────────────────────────────────────────────────────────────────────────
+_*.py
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor / OS
+# ─────────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Claude Code session / scratch
+# ─────────────────────────────────────────────────────────────────────────────
+.claude/
+CLAUDE.md
+memory/

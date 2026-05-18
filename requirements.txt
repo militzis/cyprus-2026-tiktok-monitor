@@ -1,0 +1,29 @@
+# Cyprus 2026 TikTok ad monitor — runtime dependencies
+#
+# Pinned ranges tested in dev. Loosen the upper bounds with caution —
+# breaking changes do happen.
+
+# ── Core HTTP / data ──────────────────────────────────────────────────
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+pandas>=2.0,<4
+openpyxl>=3.1,<4
+
+# ── Streamlit dashboard ───────────────────────────────────────────────
+streamlit>=1.30,<2
+altair>=5,<7
+
+# ── TikTok handle resolution + bio scanning ───────────────────────────
+playwright>=1.40,<2
+#   after install:  python -m playwright install chromium
+
+# ── Creative ingestion + transcription ────────────────────────────────
+faster-whisper>=1.0,<2
+opencv-python-headless>=4.8,<5
+
+# ── Optional: AI-assisted classification (classify_ads.py) ────────────
+anthropic>=0.18,<1
+
+# ── Stdlib enhancements (daily reports / progress bars) ──────────────
+tqdm>=4.60,<5
+rich>=13,<16
