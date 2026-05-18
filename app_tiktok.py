@@ -169,7 +169,7 @@ st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.column
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Filtered ads", len(f))
+c1.metric("Total ads", len(f))
 c2.metric("Unique advertisers", f['advertiser_id'].nunique())
 c3.metric("🟢 Candidates", f[f['match_type'] == 'manual_resume']['advertiser_id'].nunique())
 c4.metric("🟣 Party accounts", f[f['match_type'].isin(['party_account', 'party_coordinator'])]['advertiser_id'].nunique())
