@@ -176,24 +176,36 @@ st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.column
 # going stale (today's bug class).
 @st.cache_data(ttl=60)
 def load_last_health():
+    """Return (row, error_msg). row is None if the query couldn't run;
+    error_msg explains why (so the badge can show the real cause instead
+    of a silent fallback)."""
     try:
         conn = sqlite3.connect(DB)
+        # Probe schema first — if the table doesn't exist yet (deploy hasn't
+        # rebuilt with the T3-J change), say that explicitly.
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_health'"
+        ).fetchone()
+        if not exists:
+            return None, "table 'pipeline_health' doesn't exist yet — deploy may not have rebuilt with the latest commit"
         row = conn.execute(
             "SELECT run_kind, finished_at, status, ads_checked, changes, "
             "errors, error_msg FROM pipeline_health "
             "ORDER BY finished_at DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        return row
-    except Exception:
-        return None
+        if row is None:
+            return None, "pipeline_health table exists but is empty — no refresh has recorded a heartbeat yet"
+        return row, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
-_h = load_last_health()
+_h, _h_err = load_last_health()
 if _h is None:
     st.warning(
-        "⚠ **Pipeline health: unknown.** No `pipeline_health` row has been "
-        "written yet. The first cron refresh will populate it. If this "
-        "persists for >24h, the daily workflow has never run successfully."
+        f"⚠ **Pipeline health: unknown.** {_h_err or 'No row available.'} "
+        "If this persists for >24h, the daily workflow has never run "
+        "successfully."
     )
 else:
     _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
