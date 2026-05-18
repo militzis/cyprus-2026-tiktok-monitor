@@ -164,8 +164,7 @@ if date_range and len(date_range) == 2:
 
 # ── Page header ───────────────────────────────────────────────────────────────
 st.title("🎯 TikTok Political Ads — Cyprus 2026")
-st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.columns else '?'}  ·  "
-           f"DB: `{DB}`")
+st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.columns else '?'}")
 
 
 # ── Pipeline health badge ─────────────────────────────────────────────────────
