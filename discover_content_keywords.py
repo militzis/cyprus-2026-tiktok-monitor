@@ -84,9 +84,37 @@ KEYWORDS = [
     'Ορθοδοξία Οικογένεια',                   # (20c / 39b ✓)
     'Ελληνισμός Ορθοδοξία',                   # (20c / 39b ✓)
     'απέλαση', 'μεταναστευτικό', 'λαθρομετανάστες',
-    # ── Common political slogans / themes ──
     'αλλαγή', 'ανανέωση', 'μεταρρύθμιση', 'δημοκρατία', 'πατρίδα',
     'change cyprus', 'new cyprus',
+    # ── Sweep batch added 2026-05-18 ───────────────────────────────────
+    # Housing / cost-of-living (huge issue in CY 2026)
+    'στέγη', 'ενοίκιο', 'ενοίκια', 'πρώτη κατοικία', 'στεγαστικό',
+    'ακρίβεια', 'ακριβός', 'πληθωρισμός', 'ΦΠΑ', 'τιμές',
+    # Healthcare
+    'ΓΕΣΥ', 'υγεία', 'νοσηλεία', 'φάρμακα', 'ασφάλιση',
+    # Education / youth
+    'παιδεία', 'πανεπιστήμιο', 'φοιτητές', 'νεολαία',
+    'νέοι ψηφοφόροι', 'πρώτη ψήφος', 'νέα γενιά',
+    # Environment / climate
+    'περιβάλλον', 'κλιματική', 'κλιματική κρίση', 'ανανεώσιμες',
+    # Pensions / welfare
+    'σύνταξη', 'συντάξεις', 'συνταξιούχοι', 'ΕΕΕ', 'κοινωνική',
+    # Foreign / EU policy
+    'Τουρκία', 'τουρκική', 'εισβολή', 'Ευρώπη', 'Ευρωπαϊκή Ένωση',
+    # Domestic political process
+    'νομοσχέδιο', 'δημοψήφισμα', 'ψηφοφόρος', 'καμπάνια',
+    # Common candidate slogans (frequent in CY 2026 ads)
+    'καλύτερα', 'ψήφος ευθύνης', 'ψήφος αλλαγής',
+    'καλύτερο μέλλον', 'νέα Κύπρος', 'για την Κύπρο',
+    'για όλους', 'μαζί',
+    # TikTok hashtag-style
+    'cyprus2026', 'cyelections', 'cyelections2026',
+    'κυπριακέςεκλογές', 'βουλευτικές2026',
+    # Specific Cyprus-only political figures (non-party)
+    'Χριστοδουλίδης', 'Παμπορίδης', 'Τορναρίτης',
+    'Στεφάνου', 'Δαμιανού',
+    # ELAM variants
+    'εθνική παράταξη', 'ελληνική Κύπρος',
 ]
 
 # Existing bids in our DB so we know what's NEW
@@ -227,7 +255,20 @@ for bid_str, ad_records in ads_by_bid.items():
     if bid_str in KNOWN_BIDS:
         continue   # skip — we already track this advertiser
     rows = []
-    handle_or_id = ad_records[0].get('business_name') or bid_str
+    # Deleted-account API quirk: TikTok's ad endpoint sometimes returns the
+    # funder's numeric ID in `business_name` instead of the readable @handle —
+    # not only for deleted accounts but also for LIVE accounts with separate
+    # funder entities (observed for @cmountouckos, @marioshaperis, @slow_job,
+    # @tolkerscy, @stavrosefstathiou). Numeric "names" pollute downstream
+    # triage and look like ghost advertisers. If business_name is purely
+    # digits, fall back to the bid so at least we don't double-track the
+    # same advertiser under two identities. The real handle has to be
+    # back-filled via Playwright bioscan or the ad/query search_term lookup.
+    api_name = (ad_records[0].get('business_name') or '').strip()
+    if api_name.isdigit() or not api_name:
+        handle_or_id = bid_str
+    else:
+        handle_or_id = api_name
     hit_terms_set = set()
     for rec in ad_records:
         hit_terms_set.update(rec.get('hit_terms', []))
