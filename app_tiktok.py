@@ -13,11 +13,31 @@ import pandas as pd
 import streamlit as st
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DB = os.environ.get('POLITICIAN_ADS_DB',
-                    r'C:\Users\milit\meta_pipeline_data\politician_ads.db')
+# Resolve DB path with fallback chain:
+#  1. POLITICIAN_ADS_DB env var (dev: points at full local DB)
+#  2. ./politician_ads_public.db sibling to this file (public Streamlit deploy)
+#  3. legacy Windows path (dev machine fallback)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PUBLIC_DB = os.path.join(_HERE, 'politician_ads_public.db')
+_LEGACY_DB = r'C:\Users\milit\meta_pipeline_data\politician_ads.db'
+
+if os.environ.get('POLITICIAN_ADS_DB'):
+    DB = os.environ['POLITICIAN_ADS_DB']
+elif os.path.exists(_PUBLIC_DB):
+    DB = _PUBLIC_DB
+else:
+    DB = _LEGACY_DB
+
 CREATIVES = os.environ.get('TIKTOK_CREATIVES_DIR',
-                           r'C:\Users\milit\meta_pipeline_data\creatives')
-CANDIDATES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'candidates.csv')
+                           os.path.join(_HERE, 'creatives'))
+CANDIDATES_CSV = os.path.join(_HERE, 'candidates.csv')
+
+if not os.path.exists(DB):
+    import streamlit as st
+    st.error(f"Database not found at {DB}. "
+             f"On Streamlit Cloud, the public snapshot `politician_ads_public.db` "
+             f"should sit next to this script.")
+    st.stop()
 
 st.set_page_config(page_title="TikTok ads — Cyprus 2026", layout="wide", page_icon="🎯")
 
