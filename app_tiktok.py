@@ -455,7 +455,8 @@ with tab_status:
         changes = pd.read_sql_query("""
             SELECT sc.observed_at, sc.ad_id, sc.prev_status, sc.new_status,
                    sc.new_statement, sc.handle,
-                   a.matched_candidate, a.matched_party, a.matched_district, a.ad_url
+                   a.matched_candidate, a.matched_party, a.matched_district,
+                   a.ad_url, a.videos_json, a.image_urls_json
             FROM tiktok_ad_status_changes sc
             LEFT JOIN tiktok_ads a USING(ad_id)
             ORDER BY sc.observed_at DESC
@@ -463,6 +464,25 @@ with tab_status:
         """, conn)
         conn.close()
         changes_loaded = True
+        # Derive profile URL and CDN URL (first video / first image)
+        def _profile(h):
+            if not h or str(h).isdigit(): return ''
+            return f"https://www.tiktok.com/@{h}"
+        def _cdn(row):
+            try:
+                vids = json.loads(row.get('videos_json') or '[]')
+                if vids:
+                    return vids[0].get('url') or ''
+                imgs = json.loads(row.get('image_urls_json') or '[]')
+                if imgs:
+                    first = imgs[0]
+                    return first if isinstance(first, str) else (first.get('url', '') if isinstance(first, dict) else '')
+            except Exception:
+                pass
+            return ''
+        if not changes.empty:
+            changes['profile_url'] = changes['handle'].apply(_profile)
+            changes['cdn_url'] = changes.apply(_cdn, axis=1)
     except Exception:
         changes = pd.DataFrame()
         changes_loaded = False
@@ -480,11 +500,14 @@ with tab_status:
         changes['transition'] = changes['prev_status'].fillna('?') + ' → ' + changes['new_status'].fillna('?')
         st.dataframe(
             changes[['observed_at', 'transition', 'handle', 'matched_candidate',
-                     'matched_party', 'new_statement', 'ad_url']],
+                     'matched_party', 'new_statement', 'ad_url',
+                     'profile_url', 'cdn_url']],
             use_container_width=True, hide_index=True,
             column_config={
-                'observed_at': st.column_config.DatetimeColumn('When (UTC)'),
-                'ad_url':      st.column_config.LinkColumn('▶ ad', display_text='Open ad'),
+                'observed_at':   st.column_config.DatetimeColumn('When (UTC)'),
+                'ad_url':        st.column_config.LinkColumn('▶ ad library', display_text='Open in library'),
+                'profile_url':   st.column_config.LinkColumn('👤 profile', display_text='Open profile'),
+                'cdn_url':       st.column_config.LinkColumn('🎬 creative', display_text='Open creative'),
                 'new_statement': st.column_config.Column('TikTok reason', width='large'),
             }
         )
@@ -516,11 +539,14 @@ with tab_status:
             st.subheader(f"🚨 {len(removed)} ads have been REMOVED by TikTok")
             st.dataframe(removed[['observed_at', 'handle', 'matched_candidate',
                                   'matched_party', 'matched_district',
-                                  'new_statement', 'ad_url']],
+                                  'new_statement', 'ad_url', 'profile_url', 'cdn_url']],
                          use_container_width=True, hide_index=True,
                          column_config={
-                             'observed_at': st.column_config.DatetimeColumn(),
-                             'ad_url': st.column_config.LinkColumn('▶ ad', display_text='Open ad'),
+                             'observed_at':   st.column_config.DatetimeColumn(),
+                             'ad_url':        st.column_config.LinkColumn('▶ ad library', display_text='Open in library'),
+                             'profile_url':   st.column_config.LinkColumn('👤 profile', display_text='Open profile'),
+                             'cdn_url':       st.column_config.LinkColumn('🎬 creative', display_text='Open creative'),
+                             'new_statement': st.column_config.Column('TikTok reason', width='large'),
                          })
 
 # ── Browse individual ads ─────────────────────────────────────────────────────
