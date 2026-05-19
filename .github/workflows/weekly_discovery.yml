@@ -1,0 +1,170 @@
+name: Weekly discovery (find new advertisers)
+
+# Runs every Sunday at 02:00 UTC (05:00 Cyprus time):
+#   1. discover_tiktok_ads.py        — name-search every candidate + party
+#   2. discover_content_keywords.py  — sweep ~190 political keywords
+#   3. tiktok_tier2_fetch.py         — enrich newly-found ads
+#   4. compute_spend_estimates.py    — € on newly-found ads
+#   5. auto_review.py                — Claude second-opinion on new entries
+#   6. Commit + push public DB + cache files
+#
+# Discovery cache files (tiktok_discovered.json, content_keyword_discovery.json,
+# fetch_state.json, tiktok_token_cache.json) are kept in actions/cache between
+# runs so the script doesn't re-sweep keywords it already covered. Without
+# the cache the run wastes ~30 min sweeping known terms.
+#
+# Runtime: typically 45-90 min depending on how many new advertisers
+# discovery surfaces. Bounded by:
+#   - TikTok's own rate-limit cooldowns (~ten minute pauses between bursts)
+#   - --limit 500 / --limit 50 on the enrichment + review steps
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'   # Sunday 02:00 UTC
+  workflow_dispatch:       # allow manual trigger from the Actions tab
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120    # generous; usually finishes in 60-90 min
+    permissions:
+      contents: write       # push DB + cache file updates back
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install deps (discovery + tier-2 + auto-review)
+        run: |
+          set -euo pipefail
+          pip install --quiet requests python-dotenv filelock anthropic pandas
+
+      # Restore discovery caches from the previous run so we resume from
+      # where we left off (key terms already swept, advertisers already
+      # discovered, OAuth token if still valid). Without this, every
+      # Sunday re-sweeps the entire keyword universe from scratch.
+      - name: Restore discovery caches
+        id: cache-restore
+        uses: actions/cache@v4
+        with:
+          path: |
+            fetch_state.json
+            tiktok_discovered.json
+            content_keyword_discovery.json
+            tiktok_token_cache.json
+          key: tiktok-discovery-cache-${{ github.run_id }}
+          # restore-keys lets us inherit ANY previous discovery cache,
+          # not just the exact match. Newest wins.
+          restore-keys: |
+            tiktok-discovery-cache-
+
+      # Run the regression suite first — same protection as the daily
+      # workflow. Catches code regressions before they touch the live DB.
+      - name: Run regression tests
+        run: |
+          set -euo pipefail
+          python tests/test_pipeline.py
+          python tests/test_dashboard_select_completeness.py
+          python tests/test_shared_files_sync.py
+
+      # ── DISCOVERY PHASE 1: name search ────────────────────────────
+      # Iterates over every candidate surname + party abbreviation in
+      # candidates.csv, calls /advertiser/query/ for each, filters CY,
+      # then pulls every ad for each new advertiser. Catches candidates
+      # who registered TikTok ad accounts since our last sweep.
+      - name: Discover advertisers by name
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python discover_tiktok_ads.py
+
+      # ── DISCOVERY PHASE 2: content-keyword sweep ─────────────────
+      # Iterates over ~190 hardcoded keywords (party names, policy terms,
+      # ballot vocabulary, common slogans, current scandals). Catches
+      # advertisers who don't match by name (supporters, agencies,
+      # numeric-funder-ID accounts). Historically finds 50-300 new
+      # advertisers per sweep.
+      - name: Sweep content keywords
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python discover_content_keywords.py
+
+      # ── ENRICHMENT CHAIN (same as daily, but limit raised) ────────
+      # Newly-discovered ads have NULL in all the targeting / demographic /
+      # spend / review columns. The daily cron handles 300/day, which
+      # would take days to catch up after a 100+ new-advertiser sweep.
+      # Run a bigger enrichment pass right after discovery so the new
+      # rows are fully populated by Monday morning.
+      - name: Enrich new ads (tier 2 — targeting + demographics)
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python tiktok_tier2_fetch.py --limit 500
+
+      - name: Recompute spend estimates for new ads
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python compute_spend_estimates.py --only-null
+
+      - name: Auto-review newly-discovered advertisers
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          POLITICIAN_ADS_DB:  politician_ads_public.db
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not set — skipping auto-review."
+            exit 0
+          fi
+          # 50 caps cost at ~$0.025/week worst case.
+          python auto_review.py --bucket all_unreviewed --limit 50
+
+      # ── Commit + push ────────────────────────────────────────────
+      # Push the public DB so Streamlit Cloud picks up new advertisers.
+      # We do NOT commit the JSON caches — they live in actions/cache,
+      # not the repo (avoids polluting git history with multi-MB JSON).
+      - name: Commit + push if anything changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add politician_ads_public.db
+          if git diff --cached --quiet; then
+            echo "No new advertisers / ads to commit."
+          else
+            git commit -m "auto: weekly discovery sweep $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      # Loud-fail step — runs only on failure. Without it, silent
+      # crashes (rate-limit storm, OAuth expiry, schema drift) would
+      # be invisible until someone checked the Actions tab manually.
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error title=Weekly discovery FAILED::A previous step exited non-zero."
+          echo "Common causes:"
+          echo "  - TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET expired"
+          echo "  - TikTok API rate-limit storm (RateLimitExceeded)"
+          echo "  - Tests caught a regression — fix before next Sunday's run"
+          exit 1
