@@ -328,13 +328,42 @@ def _median_days_to_removal(removed_ad_ids: tuple) -> float | None:
     return values[len(values)//2] if values else None
 
 
+@st.cache_data(ttl=60)
+def _last_refresh_age_hours() -> float | None:
+    """Fallback freshness signal: MAX(last_status_check) on tiktok_ads.
+    Used when pipeline_health is missing or empty (fresh deploy that
+    hasn't seen a successful cron yet — exactly the state today's
+    incident left the DB in)."""
+    try:
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT MAX(last_status_check) FROM tiktok_ads "
+            "WHERE last_status_check IS NOT NULL"
+        ).fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return None
+        return (pd.Timestamp.utcnow().tz_localize(None) -
+                pd.to_datetime(row[0])).total_seconds() / 3600
+    except Exception:
+        return None
+
+
 _h, _h_err = load_last_health()
 if _h is None:
-    # Silent — when there's no health row yet (fresh deploy / first cron),
-    # we don't want a yellow banner cluttering the page. The dashboard's
-    # "Last DB write" caption already tells the user when data was last
-    # touched. Red banners (failure/stale) still fire below.
-    pass
+    # No pipeline_health row (or table missing). Don't go silent — fall
+    # back to tiktok_ads.last_status_check so a stale-data condition
+    # still gets a public-facing warning. This was the state on 2026-05-19
+    # when cron hadn't successfully written a heartbeat for 36+ hours
+    # and the dashboard showed no indication at all.
+    _fallback_age = _last_refresh_age_hours()
+    if _fallback_age is not None and _fallback_age > 25:
+        st.warning(
+            f"⏰ **Some figures may be a few hours out of date.** "
+            f"Our automated data refresh is currently degraded; we "
+            f"normally update this dashboard several times daily. "
+            f"Most recent fresh data: **~{_fallback_age:.0f} h ago.**"
+        )
 else:
     _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
     _fin_ts = pd.to_datetime(_fin)

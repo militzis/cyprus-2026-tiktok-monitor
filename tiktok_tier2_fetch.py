@@ -235,7 +235,11 @@ def _run(args):
         return
 
     t.get_access_token()
-    t.reset_api_metrics()
+    # reset_api_metrics + print_api_summary added 2026-05-20 so the
+    # heartbeat row carries API throughput/429%/latency. Discover this
+    # via dashboard's health badge or in the workflow log.
+    if hasattr(t, 'reset_api_metrics'):
+        t.reset_api_metrics()
     n_done, n_errors, crash_msg = 0, 0, None
     try:
         for i, (ad_id, handle) in enumerate(rows, 1):
@@ -255,7 +259,8 @@ def _run(args):
         crash_msg = repr(e)
         raise
     finally:
-        api_summary = t.print_api_summary('enrich')
+        api_summary = (t.print_api_summary('enrich')
+                       if hasattr(t, 'print_api_summary') else '')
         msg = crash_msg if crash_msg else (api_summary or None)
         record_health(
             conn, started_at,

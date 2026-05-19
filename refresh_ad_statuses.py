@@ -200,18 +200,28 @@ def _checkpoint_push(label: str) -> None:
         # Skip if nothing actually changed on disk (avoids empty commits
         # when the first batch of N ads happened to all be unchanged).
         diff = subprocess.run(['git', 'diff', '--quiet', '--', DB],
-                              capture_output=True)
+                              capture_output=True, timeout=10)
         if diff.returncode == 0:
             return
+        # Per-call timeouts so a network hang on `git push` (TikTok ads
+        # API can be slow; GitHub's git proxy occasionally is too) doesn't
+        # freeze the refresh loop. 60s for push covers a slow upload of
+        # the ~1 MB DB; add/commit are local so 30s is generous.
         subprocess.run(['git', 'add', DB], env=env, check=True,
-                       capture_output=True)
+                       capture_output=True, timeout=30)
         subprocess.run(
             ['git', 'commit', '-m', f'auto: refresh checkpoint — {label}'],
-            env=env, check=True, capture_output=True,
+            env=env, check=True, capture_output=True, timeout=30,
         )
-        subprocess.run(['git', 'push', 'origin', 'HEAD'],
-                       env=env, check=True, capture_output=True)
+        # HEAD:main is explicit — actions/checkout@v4 leaves us on the
+        # 'main' branch on push-triggered workflows but a future change in
+        # checkout could shift to detached HEAD, breaking `push origin HEAD`.
+        subprocess.run(['git', 'push', 'origin', 'HEAD:main'],
+                       env=env, check=True, capture_output=True, timeout=60)
         print(f"  ✓ checkpoint pushed: {label}", flush=True)
+    except subprocess.TimeoutExpired as e:
+        print(f"  ⚠ checkpoint timed out on {e.cmd[1] if len(e.cmd) > 1 else '?'} "
+              f"({e.timeout}s) — continuing refresh", flush=True)
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or b'').decode('utf-8', 'replace')[:300]
         print(f"  ⚠ checkpoint failed ({e.returncode}): {stderr}", flush=True)
