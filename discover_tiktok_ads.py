@@ -72,6 +72,35 @@ MAX_COOLDOWNS    = 3     # after this many cooldowns w/o forward progress, bail 
 BACKOFF_BASE_429 = 30    # initial 429 wait — bumped from 5s (TikTok's window is ~60s)
 BACKOFF_MAX_429  = 240   # cap on per-call exponential backoff
 
+# ── API metrics (process-local, reset per run) ───────────────────────────────
+# Before we instrumented _api_post we were tuning --limit / timeouts blind:
+# the 2026-05-19 22:01 UTC election-week run printed zero stdout (buffering
+# bug, since fixed) and zero metrics for 45 minutes. Now every refresh /
+# discover / enrich call site can `reset_api_metrics()` at start and
+# `print_api_summary()` at end, surfacing call count, % rate-limited, and
+# average latency. The numbers are what drive sane --limit choices.
+_api_metrics = {'calls': 0, 'rate_limited': 0, 'total_seconds': 0.0}
+
+
+def reset_api_metrics() -> None:
+    _api_metrics.update(calls=0, rate_limited=0, total_seconds=0.0)
+
+
+def print_api_summary(label: str = '') -> str:
+    """Print a one-line summary of API activity since the last reset.
+    Returns the summary string so callers can also include it in the
+    pipeline_health row's error_msg / heartbeat metadata."""
+    n = _api_metrics['calls']
+    if n == 0:
+        return ''
+    avg     = _api_metrics['total_seconds'] / n
+    pct_rl  = _api_metrics['rate_limited'] / n * 100
+    summary = (f"API summary{' ('+label+')' if label else ''}: "
+               f"{n} calls, {_api_metrics['rate_limited']} rate-limited "
+               f"({pct_rl:.1f}%), avg {avg:.2f}s/call")
+    print(f"  {summary}", flush=True)
+    return summary
+
 
 # ── Shared helpers (kept inline to decouple from discover_google_ads) ─────────
 
@@ -319,6 +348,7 @@ def _api_post(url: str, params: dict, body: dict,
     for attempt in range(max_retries):
         token = get_access_token(force_refresh=need_refresh)
         need_refresh = False
+        _t0 = time.time()
         r = requests.post(
             url,
             params=params,
@@ -329,12 +359,17 @@ def _api_post(url: str, params: dict, body: dict,
             },
             timeout=30,
         )
+        # Track every request (including rate-limited ones) so the summary
+        # reflects real throughput, not just successful calls.
+        _api_metrics['calls'] += 1
+        _api_metrics['total_seconds'] += time.time() - _t0
 
         if r.status_code == 401 and attempt < max_retries - 1:
             need_refresh = True
             continue
 
         if _is_rate_limit_response(r):
+            _api_metrics['rate_limited'] += 1
             # Prefer the server's Retry-After. Add small jitter to avoid
             # everyone retrying on exactly the same second.
             retry_after = _parse_retry_after(r.headers.get('Retry-After'))
@@ -381,7 +416,11 @@ def query_advertisers(search_term: str, max_count: int = 50) -> list[dict]:
     except RateLimitExceeded:
         raise
     except Exception as e:
-        print(f"    [advertisers] '{search_term}' failed: {e}")
+        # Was a quiet swallow; now LOUD on stderr so workflow log surfaces
+        # it. Still returns [] so the per-term loop above keeps going —
+        # one bad search term shouldn't abort an entire discovery sweep.
+        print(f"    [ERROR] query_advertisers('{search_term}') "
+              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
         return []
     return data.get('data', {}).get('advertisers', [])
 
@@ -881,6 +920,7 @@ def main():
 
     started_at = datetime.utcnow().isoformat()
     crash_msg  = None
+    reset_api_metrics()
     try:
         run(args)
     except SystemExit:
@@ -889,13 +929,17 @@ def main():
         crash_msg = repr(e)
         raise
     finally:
+        api_summary = print_api_summary('discover_name')
         # Skip heartbeat on --dry-run (no DB writes intended)
         if not getattr(args, 'dry_run', False):
+            # Tuck the API summary into error_msg even on success so the
+            # dashboard health badge can show it (no schema change needed).
+            msg = crash_msg if crash_msg else (api_summary or None)
             _record_health(
                 run_kind='discover_name',
                 started_at=started_at,
                 status='failed' if crash_msg else 'ok',
-                error_msg=crash_msg,
+                error_msg=msg,
             )
 
 

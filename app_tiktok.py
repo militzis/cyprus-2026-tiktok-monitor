@@ -298,6 +298,36 @@ def load_last_health():
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
+@st.cache_data(ttl=60)
+def _median_days_to_removal(removed_ad_ids: tuple) -> float | None:
+    """Median days between first_shown and the takedown event for a set
+    of removed ad_ids. Pulled out so the Enforcement tab gets cache reuse
+    across reruns and uses a parameterized IN clause instead of f-string
+    SQL (the old version would have broken on any ad_id containing a
+    quote, even though TikTok ids are numeric in practice)."""
+    if not removed_ad_ids:
+        return None
+    try:
+        conn = sqlite3.connect(DB)
+        placeholders = ','.join('?' * len(removed_ad_ids))
+        rows = conn.execute(f"""
+            SELECT julianday(sc.observed_at) - julianday(a.first_shown)
+              AS days_to_removal
+            FROM tiktok_ad_status_changes sc
+            JOIN tiktok_ads a USING(ad_id)
+            WHERE sc.ad_id IN ({placeholders})
+              AND (
+                LOWER(IFNULL(sc.new_statement,'')) LIKE '%removed%'
+                OR LOWER(IFNULL(sc.new_statement,'')) LIKE '%violation%'
+              )
+        """, removed_ad_ids).fetchall()
+        conn.close()
+    except Exception:
+        return None
+    values = sorted([float(r[0]) for r in rows if r[0] is not None])
+    return values[len(values)//2] if values else None
+
+
 _h, _h_err = load_last_health()
 if _h is None:
     # Silent — when there's no health row yet (fresh deploy / first cron),
@@ -309,6 +339,19 @@ else:
     _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
     _fin_ts = pd.to_datetime(_fin)
     _age_h  = (pd.Timestamp.utcnow().tz_localize(None) - _fin_ts).total_seconds() / 3600
+    _degraded = (_stat == 'failed') or (_age_h > 25)
+    if _degraded:
+        # Public-facing notice — plain language, no jargon, sits ABOVE
+        # the technical banner so a casual visitor understands the data
+        # isn't fully current without needing to parse "stale" or
+        # "GitHub Actions log."
+        st.warning(
+            f"⏰ **Some figures may be a few hours out of date.** "
+            f"Our automated data refresh is currently degraded; we "
+            f"normally update this dashboard several times daily. "
+            f"Most recent fresh data: **{_fin_ts:%a %d %b %Y, %H:%M} UTC** "
+            f"({_age_h:.1f} h ago)."
+        )
     if _stat == 'failed':
         st.error(
             f"🚨 **Last pipeline run FAILED** ({_kind}, {_fin_ts:%Y-%m-%d %H:%M} UTC, "
@@ -317,16 +360,21 @@ else:
         )
     elif _age_h > 25:
         st.error(
-            f"🚨 **Pipeline is STALE** — last successful refresh was "
-            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f} h ago). The daily "
-            f"cron may have stopped firing. Check GitHub Actions."
+            f"🚨 **Pipeline is STALE** — last successful run was "
+            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f} h ago). The cron "
+            f"may have stopped firing. Check GitHub Actions."
         )
     else:
+        # _err_msg now carries the API summary on successful runs
+        # (refresh / discover / enrich each tucks it there via
+        # print_api_summary). Surface inline so we can see throughput
+        # and rate-limit % at a glance — drives sane --limit tuning.
+        api_extra = f" · {_err_msg}" if _err_msg and 'API summary' in _err_msg else ''
         st.success(
-            f"✅ Pipeline healthy — last {_kind} refresh "
+            f"✅ Pipeline healthy — last {_kind} run "
             f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f}h ago), "
             f"checked {_ads or 0} ads, {_changes or 0} change(s), "
-            f"{_errs or 0} API error(s)."
+            f"{_errs or 0} API error(s).{api_extra}"
         )
 
 # ── Estimated total spend banner ──────────────────────────────────────────────
@@ -494,32 +542,13 @@ with tab_enforce:
 
     # Median days to removal — for the K rows TikTok removed, how long
     # between when we first saw the ad live and when status_change_log
-    # marked it removed?
-    median_days_to_removal = None
-    try:
-        conn = sqlite3.connect(DB)
-        # Find removal events in tiktok_ad_status_changes that match
-        # our political-tier ad_ids, and pair with first_shown in tiktok_ads.
-        ad_ids = ", ".join(f"'{a}'" for a in pol[pol['removed_by_tiktok']]['ad_id'].tolist())
-        if ad_ids:
-            days_rows = conn.execute(f"""
-                SELECT
-                  julianday(sc.observed_at) - julianday(a.first_shown) AS days_to_removal
-                FROM tiktok_ad_status_changes sc
-                JOIN tiktok_ads a USING(ad_id)
-                WHERE sc.ad_id IN ({ad_ids})
-                  AND (
-                    LOWER(IFNULL(sc.new_statement,'')) LIKE '%removed%'
-                    OR LOWER(IFNULL(sc.new_statement,'')) LIKE '%violation%'
-                  )
-            """).fetchall()
-            if days_rows:
-                values = sorted([float(r[0]) for r in days_rows if r[0] is not None])
-                if values:
-                    median_days_to_removal = values[len(values)//2]
-        conn.close()
-    except Exception:
-        pass
+    # marked it removed? Wrapped in a cached helper (60s TTL) because this
+    # was bypassing load_ads's cache and re-querying SQLite on every page
+    # render, and using a parameterized IN clause (was f-string formatting
+    # ad_ids, which would silently break the moment one contained a quote).
+    median_days_to_removal = _median_days_to_removal(
+        tuple(pol[pol['removed_by_tiktok']]['ad_id'].tolist())
+    )
 
     # ─── Headline metric: BIG removal rate ─────────────────────────────
     st.markdown(

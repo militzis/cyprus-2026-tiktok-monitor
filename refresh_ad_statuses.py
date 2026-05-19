@@ -143,6 +143,7 @@ def _refresh_impl(args):
     n_unchanged_total = 0
     n_failed_total    = 0
     crash_msg         = None
+    t.reset_api_metrics()
     try:
         n_changed_total, n_unchanged_total, n_failed_total = \
             _refresh_loop(args, conn)
@@ -150,6 +151,11 @@ def _refresh_impl(args):
         crash_msg = repr(e)
         raise
     finally:
+        api_summary = t.print_api_summary('refresh')
+        # Tuck the API summary into the heartbeat's error_msg so the
+        # dashboard can show it even on successful runs (no schema change
+        # needed). On failure, prefer the crash message.
+        msg = crash_msg if crash_msg else (api_summary or None)
         record_health(
             conn,
             run_kind='refresh',
@@ -158,7 +164,7 @@ def _refresh_impl(args):
             ads_checked=n_changed_total + n_unchanged_total + n_failed_total,
             changes=n_changed_total,
             errors=n_failed_total,
-            error_msg=crash_msg,
+            error_msg=msg,
             since_arg=getattr(args, 'since', None),
             limit_arg=getattr(args, 'limit', None),
         )

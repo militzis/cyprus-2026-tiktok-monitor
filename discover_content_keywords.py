@@ -219,6 +219,7 @@ def main() -> None:
     crash_msg  = None
     n_new_advertisers = 0
     saved_total       = 0
+    t.reset_api_metrics()
     try:
         # Existing bids in our DB so we know what's NEW
         c = sqlite3.connect(DB)
@@ -378,13 +379,17 @@ def main() -> None:
         crash_msg = repr(e)
         raise
     finally:
+        api_summary = t.print_api_summary('discover_keywords')
+        # Tuck API summary into error_msg on success so the dashboard
+        # health badge can show it without a schema change.
+        msg = crash_msg if crash_msg else (api_summary or None)
         _record_health(
             run_kind='discover_keywords',
             started_at=started_at,
             status='failed' if crash_msg else 'ok',
             ads_checked=saved_total,
             changes=n_new_advertisers,
-            error_msg=crash_msg,
+            error_msg=msg,
         )
 
 

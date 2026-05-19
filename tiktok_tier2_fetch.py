@@ -235,6 +235,7 @@ def _run(args):
         return
 
     t.get_access_token()
+    t.reset_api_metrics()
     n_done, n_errors, crash_msg = 0, 0, None
     try:
         for i, (ad_id, handle) in enumerate(rows, 1):
@@ -254,10 +255,12 @@ def _run(args):
         crash_msg = repr(e)
         raise
     finally:
+        api_summary = t.print_api_summary('enrich')
+        msg = crash_msg if crash_msg else (api_summary or None)
         record_health(
             conn, started_at,
             status='failed' if crash_msg else 'ok',
-            n_done=n_done, n_errors=n_errors, error_msg=crash_msg,
+            n_done=n_done, n_errors=n_errors, error_msg=msg,
             since_arg=str(args.since_days) if args.since_days else None,
             limit_arg=args.limit,
         )
