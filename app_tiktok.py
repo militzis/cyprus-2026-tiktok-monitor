@@ -823,7 +823,12 @@ with tab_status:
         "the last 7 days."
     )
 
-    # KPI row
+    # KPI row — shows all the buckets that actually have non-trivial
+    # populations. "Expired" was misleading because TikTok almost never
+    # returns ad_status='expired' (it's a status TikTok rarely uses), so
+    # the KPI was structurally always 0 even though plenty of ads HAD
+    # ended their run. Replaced with the date-derived Recently inactive
+    # / Dormant buckets so the row roughly sums to the universe.
     status_counts = f['derived_status'].value_counts()
     status_order = [
         '🚨 Removed by TikTok',
@@ -834,10 +839,32 @@ with tab_status:
         '⚪ Dormant (30+ days)',
         '❓ Unknown',
     ]
-    kpi_cols = st.columns(min(4, len(status_order)))
-    for i, label in enumerate(status_order[:4]):
+    # Top-row KPIs: the actionable lifecycle signals (what's happening
+    # right now + the headline-worthy negative outcomes).
+    kpi_labels_row1 = [
+        '🚨 Removed by TikTok',
+        '🗑 Deleted by advertiser',
+        '✅ Active (last 7 days)',
+        '🟡 Recently inactive (8–30 days)',
+        '⚪ Dormant (30+ days)',
+    ]
+    kpi_cols = st.columns(len(kpi_labels_row1))
+    for i, label in enumerate(kpi_labels_row1):
         with kpi_cols[i]:
             st.metric(label, int(status_counts.get(label, 0)))
+
+    # Sanity-check sum vs total, then surface the rare buckets in a
+    # small caption instead of stealing a KPI tile.
+    _shown = sum(int(status_counts.get(l, 0)) for l in kpi_labels_row1)
+    _rare = {l: int(status_counts.get(l, 0)) for l in ('⌛ Expired', '❓ Unknown')
+             if int(status_counts.get(l, 0)) > 0}
+    _rare_str = ", ".join(f"{l}: {n}" for l, n in _rare.items()) if _rare else "0"
+    st.caption(
+        f"5 buckets above sum to **{_shown}** of {len(f)} filtered ads "
+        f"({len(f) - _shown} in other buckets — {_rare_str}). "
+        f"Expired is rare because TikTok seldom returns `ad_status='expired'`; "
+        f"most ads that finished their run land in *Recently inactive* or *Dormant* instead."
+    )
 
     st.bar_chart(status_counts.reindex(status_order).dropna(), height=280)
 
