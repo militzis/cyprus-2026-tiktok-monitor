@@ -11,7 +11,8 @@
    5. Persist a side-cache (content_keyword_discovery.json) for resumability
 """
 import sys, os, time, json, sqlite3, importlib
-from datetime import date, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding='utf-8')
 import discover_tiktok_ads as t
@@ -121,27 +122,55 @@ KEYWORDS = [
     'εθνική παράταξη', 'ελληνική Κύπρος',
 ]
 
-# Existing bids in our DB so we know what's NEW
-c = sqlite3.connect(DB)
-KNOWN_BIDS = {row[0] for row in c.execute("SELECT DISTINCT advertiser_id FROM tiktok_ads")}
-# Also load the older 921-discovery cache to widen "known"
-disc_cache_path = os.path.join(BASE, 'tiktok_discovered.json')
-if os.path.exists(disc_cache_path):
-    with open(disc_cache_path, encoding='utf-8') as f:
-        KNOWN_BIDS |= set((json.load(f).get('advertisers', {}) or {}).keys())
-print(f"  starting with {len(KNOWN_BIDS)} known bids in DB+discovery cache\n")
-
-# Resumable: load any progress from previous runs
-side: dict = {'tried_keywords': [], 'found_ads': {}}
-if os.path.exists(SIDE_CACHE):
-    with open(SIDE_CACHE, encoding='utf-8') as f:
-        side = json.load(f)
-    print(f"  resuming: {len(side['tried_keywords'])} keywords already done, {len(side['found_ads'])} unique ads cached")
-
-t.get_access_token()
-tok = t.get_access_token()
+# Date-range constants — pure compute, safe at import time
 SINCE = '20250901'
 TODAY_MINUS_1 = (date.today() - timedelta(days=1)).strftime('%Y%m%d')
+
+
+# ── Heartbeat (pipeline_health) ───────────────────────────────────────────────
+# Shared shape with refresh_ad_statuses.py + discover_tiktok_ads.py. Without
+# this row, the dashboard health badge can't tell whether discovery is healthy
+# — silent failures (like the no-such-table crash on 2026-05-19) stayed
+# invisible because only refresh + enrich wrote heartbeats.
+
+def _ensure_health_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_health (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_kind     TEXT    NOT NULL,
+            started_at   TEXT    NOT NULL,
+            finished_at  TEXT    NOT NULL,
+            status       TEXT    NOT NULL,
+            ads_checked  INTEGER,
+            changes      INTEGER,
+            errors       INTEGER,
+            error_msg    TEXT,
+            since_arg    TEXT,
+            limit_arg    INTEGER
+        )
+    """)
+    conn.commit()
+
+
+def _record_health(run_kind: str, started_at: str, status: str,
+                   ads_checked: int = 0, changes: int = 0, errors: int = 0,
+                   error_msg: str | None = None) -> None:
+    """Best-effort heartbeat write. Never raises — a heartbeat failure
+    shouldn't take down the discovery run."""
+    try:
+        conn = sqlite3.connect(DB)
+        _ensure_health_schema(conn)
+        conn.execute("""
+            INSERT INTO pipeline_health
+              (run_kind, started_at, finished_at, status,
+               ads_checked, changes, errors, error_msg)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (run_kind, started_at, datetime.utcnow().isoformat(),
+              status, ads_checked, changes, errors, error_msg))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"  ⚠ heartbeat write failed: {e!r}")
 
 
 def search_ads_by_keyword(keyword: str, max_pages: int = 5) -> list[dict]:
@@ -185,135 +214,179 @@ def search_ads_by_keyword(keyword: str, max_pages: int = 5) -> list[dict]:
     return all_ads
 
 
-# ── Sweep keywords ────────────────────────────────────────────────────────────
-new_bids: dict[str, dict] = {}     # bid -> {bid, business_name, country_code, hit_terms}
-total_ads = 0
-for kw in KEYWORDS:
-    if kw in side['tried_keywords']:
-        continue
-    print(f"  searching '{kw}' ...")
+def main() -> None:
+    started_at = datetime.utcnow().isoformat()
+    crash_msg  = None
+    n_new_advertisers = 0
+    saved_total       = 0
     try:
-        ads = search_ads_by_keyword(kw)
-    except t.RateLimitExceeded:
-        print(f"    saving progress and exiting — try again in an hour")
-        break
+        # Existing bids in our DB so we know what's NEW
+        c = sqlite3.connect(DB)
+        KNOWN_BIDS = {row[0] for row in c.execute("SELECT DISTINCT advertiser_id FROM tiktok_ads")}
+        c.close()
+        # Also load the older 921-discovery cache to widen "known"
+        disc_cache_path = os.path.join(BASE, 'tiktok_discovered.json')
+        if os.path.exists(disc_cache_path):
+            with open(disc_cache_path, encoding='utf-8') as f:
+                KNOWN_BIDS |= set((json.load(f).get('advertisers', {}) or {}).keys())
+        print(f"  starting with {len(KNOWN_BIDS)} known bids in DB+discovery cache\n")
+
+        # Resumable: load any progress from previous runs
+        side: dict = {'tried_keywords': [], 'found_ads': {}}
+        if os.path.exists(SIDE_CACHE):
+            with open(SIDE_CACHE, encoding='utf-8') as f:
+                side = json.load(f)
+            print(f"  resuming: {len(side['tried_keywords'])} keywords already done, {len(side['found_ads'])} unique ads cached")
+
+        t.get_access_token()
+
+        # ── Sweep keywords ────────────────────────────────────────────────
+        new_bids: dict[str, dict] = {}     # bid -> {bid, business_name, country_code, hit_terms}
+        total_ads = 0
+        for kw in KEYWORDS:
+            if kw in side['tried_keywords']:
+                continue
+            print(f"  searching '{kw}' ...")
+            try:
+                ads = search_ads_by_keyword(kw)
+            except t.RateLimitExceeded:
+                print(f"    saving progress and exiting — try again in an hour")
+                break
+            except Exception as e:
+                print(f"    skipping '{kw}' due to error: {e}")
+                continue
+            side['tried_keywords'].append(kw)
+            if not ads:
+                with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
+                    json.dump(side, f, indent=2, ensure_ascii=False)
+                time.sleep(t.REQUEST_DELAY)
+                continue
+            total_ads += len(ads)
+            new_for_kw = 0
+            for ad in ads:
+                ad_obj = ad.get('ad', {}) or {}
+                adv    = ad.get('advertiser', {}) or {}
+                bid    = adv.get('business_id')
+                if not bid: continue
+                bid_str = str(bid)
+                ad_id   = str(ad_obj.get('id') or '')
+                if not ad_id: continue
+                # Track all ads even if advertiser is known (might be ads we missed for known advertisers)
+                side['found_ads'].setdefault(ad_id, {
+                    'ad_id': ad_id, 'bid': bid_str, 'business_name': adv.get('business_name'),
+                    'first_shown': ad_obj.get('first_shown_date'),
+                    'last_shown':  ad_obj.get('last_shown_date'),
+                    'hit_terms': [],
+                    'ad_payload': ad,
+                })
+                if kw not in side['found_ads'][ad_id]['hit_terms']:
+                    side['found_ads'][ad_id]['hit_terms'].append(kw)
+                if bid_str not in KNOWN_BIDS and bid_str not in new_bids:
+                    new_bids[bid_str] = {
+                        'bid': bid_str,
+                        'business_name': adv.get('business_name'),
+                        'country_code': adv.get('country_code'),
+                        'hit_terms': [kw],
+                    }
+                    new_for_kw += 1
+                elif bid_str in new_bids and kw not in new_bids[bid_str]['hit_terms']:
+                    new_bids[bid_str]['hit_terms'].append(kw)
+            print(f"    → {len(ads)} ads ({new_for_kw} from NEW advertisers)")
+            # Checkpoint after every keyword
+            with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
+                json.dump(side, f, indent=2, ensure_ascii=False)
+            time.sleep(t.REQUEST_DELAY)
+
+        print(f"\n  swept {len(side['tried_keywords'])}/{len(KEYWORDS)} keywords")
+        print(f"  unique ads cached: {len(side['found_ads'])}")
+        print(f"  NEW advertisers (not in our existing cache): {len(new_bids)}")
+
+        # ── For each new advertiser, save their ads to tiktok_ads ─────────
+        # We already have the ad payloads in side['found_ads'] — just dedupe and save
+        # Group by bid, then upsert. Use match_type='content_keyword'.
+        ads_by_bid = defaultdict(list)
+        for ad_id, rec in side['found_ads'].items():
+            ads_by_bid[rec['bid']].append(rec)
+
+        from tiktok_api import resolve_disclosed_name
+        for bid_str, ad_records in ads_by_bid.items():
+            if bid_str in KNOWN_BIDS:
+                continue   # skip — we already track this advertiser
+            rows = []
+            # Numeric-business_name quirk — centralized in tiktok_api.py.
+            # Sweep has no /advertiser/query/ result to fall back to (it found
+            # this advertiser via keyword), so the last-resort fallback is the
+            # business_id stringified. The real handle gets back-filled later
+            # via Playwright bioscan or a search_term lookup.
+            handle_or_id = resolve_disclosed_name(ad_records[0], fallback=bid_str)
+            hit_terms_set = set()
+            for rec in ad_records:
+                hit_terms_set.update(rec.get('hit_terms', []))
+            hit_terms_str = ','.join(sorted(hit_terms_set))[:200]
+            for rec in ad_records:
+                ad = rec['ad_payload']
+                ad_obj = ad.get('ad', {}) or {}
+                av_obj = ad.get('advertiser', {}) or {}
+                reach_raw = (ad_obj.get('reach') or {}).get('unique_users_seen') or ''
+                lb, ub = t.parse_reach(reach_raw)
+                ad_id = str(ad_obj.get('id') or '')
+                rows.append({
+                    'ad_id': ad_id,
+                    'advertiser_id': bid_str,
+                    'advertiser_disclosed_name': str(handle_or_id),
+                    'ad_funded_by': av_obj.get('paid_for_by'),
+                    'country_code': av_obj.get('country_code') or 'CY',
+                    'ad_url': f'https://library.tiktok.com/ads/detail/?ad_id={ad_id}',
+                    'first_shown': t._fmt_date(ad_obj.get('first_shown_date', '')),
+                    'last_shown':  t._fmt_date(ad_obj.get('last_shown_date', '')),
+                    'ad_status':   ad_obj.get('status'),
+                    'status_statement': ad_obj.get('status_statement'),
+                    'videos_json':     json.dumps(ad_obj.get('videos') or [], ensure_ascii=False),
+                    'image_urls_json': json.dumps(ad_obj.get('image_urls') or [], ensure_ascii=False),
+                    'reach_raw':   reach_raw,
+                    'times_shown_lower_bound': lb,
+                    'times_shown_upper_bound': ub,
+                    'targeting_json': None,
+                    'matched_candidate': '',
+                    'matched_party':    f'[content-keyword hits: {hit_terms_str}]',
+                    'matched_district': '',
+                    'match_type': 'content_keyword',
+                    'is_political': 1,
+                })
+            # Filter out any ads whose advertiser_id is already in a PROMOTED tier
+            # (manual_resume, needs_profile_verification, likely_false_positive_*).
+            # Otherwise the upsert would demote them back to content_keyword.
+            cdb = sqlite3.connect(t.DB_PATH)
+            protected = {r[0] for r in cdb.execute("""
+                SELECT DISTINCT advertiser_id FROM tiktok_ads
+                WHERE match_type IN ('manual_resume','needs_profile_verification')
+                   OR match_type LIKE 'likely_false_positive_%'
+            """)}
+            cdb.close()
+            rows_safe = [r for r in rows if r['advertiser_id'] not in protected]
+            n = t.upsert_rows(rows_safe)
+            if n > 0:
+                n_new_advertisers += 1
+            saved_total += n
+
+        print(f"\n  saved {saved_total} new content-keyword ads to tiktok_ads (skipped already-promoted advertisers)\n")
+        print(f"  Next: run transcription on the new videos (it will skip what's already cached).")
+
+    except SystemExit:
+        raise   # explicit exit — not a crash, don't record
     except Exception as e:
-        print(f"    skipping '{kw}' due to error: {e}")
-        continue
-    side['tried_keywords'].append(kw)
-    if not ads:
-        with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
-            json.dump(side, f, indent=2, ensure_ascii=False)
-        time.sleep(t.REQUEST_DELAY)
-        continue
-    total_ads += len(ads)
-    new_for_kw = 0
-    for ad in ads:
-        ad_obj = ad.get('ad', {}) or {}
-        adv    = ad.get('advertiser', {}) or {}
-        bid    = adv.get('business_id')
-        if not bid: continue
-        bid_str = str(bid)
-        ad_id   = str(ad_obj.get('id') or '')
-        if not ad_id: continue
-        # Track all ads even if advertiser is known (might be ads we missed for known advertisers)
-        side['found_ads'].setdefault(ad_id, {
-            'ad_id': ad_id, 'bid': bid_str, 'business_name': adv.get('business_name'),
-            'first_shown': ad_obj.get('first_shown_date'),
-            'last_shown':  ad_obj.get('last_shown_date'),
-            'hit_terms': [],
-            'ad_payload': ad,
-        })
-        if kw not in side['found_ads'][ad_id]['hit_terms']:
-            side['found_ads'][ad_id]['hit_terms'].append(kw)
-        if bid_str not in KNOWN_BIDS and bid_str not in new_bids:
-            new_bids[bid_str] = {
-                'bid': bid_str,
-                'business_name': adv.get('business_name'),
-                'country_code': adv.get('country_code'),
-                'hit_terms': [kw],
-            }
-            new_for_kw += 1
-        elif bid_str in new_bids and kw not in new_bids[bid_str]['hit_terms']:
-            new_bids[bid_str]['hit_terms'].append(kw)
-    print(f"    → {len(ads)} ads ({new_for_kw} from NEW advertisers)")
-    # Checkpoint after every keyword
-    with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
-        json.dump(side, f, indent=2, ensure_ascii=False)
-    time.sleep(t.REQUEST_DELAY)
+        crash_msg = repr(e)
+        raise
+    finally:
+        _record_health(
+            run_kind='discover_keywords',
+            started_at=started_at,
+            status='failed' if crash_msg else 'ok',
+            ads_checked=saved_total,
+            changes=n_new_advertisers,
+            error_msg=crash_msg,
+        )
 
-print(f"\n  swept {len(side['tried_keywords'])}/{len(KEYWORDS)} keywords")
-print(f"  unique ads cached: {len(side['found_ads'])}")
-print(f"  NEW advertisers (not in our existing cache): {len(new_bids)}")
 
-# ── For each new advertiser, save their ads to tiktok_ads ─────────────────────
-# We already have the ad payloads in side['found_ads'] — just dedupe and save
-# Group by bid, then upsert. Use match_type='content_keyword'.
-from collections import defaultdict
-ads_by_bid = defaultdict(list)
-for ad_id, rec in side['found_ads'].items():
-    ads_by_bid[rec['bid']].append(rec)
-
-saved_total = 0
-from tiktok_api import resolve_disclosed_name
-for bid_str, ad_records in ads_by_bid.items():
-    if bid_str in KNOWN_BIDS:
-        continue   # skip — we already track this advertiser
-    rows = []
-    # Numeric-business_name quirk — centralized in tiktok_api.py.
-    # Sweep has no /advertiser/query/ result to fall back to (it found
-    # this advertiser via keyword), so the last-resort fallback is the
-    # business_id stringified. The real handle gets back-filled later
-    # via Playwright bioscan or a search_term lookup.
-    handle_or_id = resolve_disclosed_name(ad_records[0], fallback=bid_str)
-    hit_terms_set = set()
-    for rec in ad_records:
-        hit_terms_set.update(rec.get('hit_terms', []))
-    hit_terms_str = ','.join(sorted(hit_terms_set))[:200]
-    for rec in ad_records:
-        ad = rec['ad_payload']
-        ad_obj = ad.get('ad', {}) or {}
-        av_obj = ad.get('advertiser', {}) or {}
-        reach_raw = (ad_obj.get('reach') or {}).get('unique_users_seen') or ''
-        lb, ub = t.parse_reach(reach_raw)
-        ad_id = str(ad_obj.get('id') or '')
-        rows.append({
-            'ad_id': ad_id,
-            'advertiser_id': bid_str,
-            'advertiser_disclosed_name': str(handle_or_id),
-            'ad_funded_by': av_obj.get('paid_for_by'),
-            'country_code': av_obj.get('country_code') or 'CY',
-            'ad_url': f'https://library.tiktok.com/ads/detail/?ad_id={ad_id}',
-            'first_shown': t._fmt_date(ad_obj.get('first_shown_date', '')),
-            'last_shown':  t._fmt_date(ad_obj.get('last_shown_date', '')),
-            'ad_status':   ad_obj.get('status'),
-            'status_statement': ad_obj.get('status_statement'),
-            'videos_json':     json.dumps(ad_obj.get('videos') or [], ensure_ascii=False),
-            'image_urls_json': json.dumps(ad_obj.get('image_urls') or [], ensure_ascii=False),
-            'reach_raw':   reach_raw,
-            'times_shown_lower_bound': lb,
-            'times_shown_upper_bound': ub,
-            'targeting_json': None,
-            'matched_candidate': '',
-            'matched_party':    f'[content-keyword hits: {hit_terms_str}]',
-            'matched_district': '',
-            'match_type': 'content_keyword',
-            'is_political': 1,
-        })
-    # Filter out any ads whose advertiser_id is already in a PROMOTED tier
-    # (manual_resume, needs_profile_verification, likely_false_positive_*).
-    # Otherwise the upsert would demote them back to content_keyword.
-    cdb = sqlite3.connect(t.DB_PATH)
-    protected = {r[0] for r in cdb.execute("""
-        SELECT DISTINCT advertiser_id FROM tiktok_ads
-        WHERE match_type IN ('manual_resume','needs_profile_verification')
-           OR match_type LIKE 'likely_false_positive_%'
-    """)}
-    cdb.close()
-    rows_safe = [r for r in rows if r['advertiser_id'] not in protected]
-    n = t.upsert_rows(rows_safe)
-    saved_total += n
-
-print(f"\n  saved {saved_total} new content-keyword ads to tiktok_ads (skipped already-promoted advertisers)\n")
-
-print(f"  Next: run transcription on the new videos (it will skip what's already cached).")
+if __name__ == '__main__':
+    main()

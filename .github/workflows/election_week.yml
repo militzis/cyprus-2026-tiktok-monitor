@@ -23,10 +23,12 @@ on:
     - cron: '0 */3 * * *'
   workflow_dispatch:
 
-# Prevent overlapping runs: if a previous 3-hour run is still going,
-# skip this one. Avoids two CI jobs racing on the same DB.
+# Shared concurrency group across daily / weekly / election-week. All three
+# workflows mutate the same DB and push to main; this serializes them so the
+# second pusher never hits non-fast-forward. The 3h tick (45min budget) is
+# well under the 180min interval, so this group also covers self-overlap.
 concurrency:
-  group: election-week-monitor
+  group: cyprus-db-write
   cancel-in-progress: false
 
 jobs:

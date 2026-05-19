@@ -11,6 +11,15 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:    # allow manual run from the Actions tab
 
+# Shared concurrency group across daily / weekly / election-week. All three
+# workflows mutate the same politician_ads_public.db and git-push to main.
+# Without this, two cron ticks could race — second push fails with non-fast-
+# forward and silently loses its DB changes. cancel-in-progress: false so a
+# long-running election-week tick at 03:00 doesn't abort the 04:00 daily run.
+concurrency:
+  group: cyprus-db-write
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest

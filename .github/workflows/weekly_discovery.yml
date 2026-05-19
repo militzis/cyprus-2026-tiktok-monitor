@@ -23,6 +23,13 @@ on:
     - cron: '0 2 * * 0'   # Sunday 02:00 UTC
   workflow_dispatch:       # allow manual trigger from the Actions tab
 
+# Shared concurrency group — see daily_status_refresh.yml for rationale.
+# Weekly typically runs 45-90 min; this prevents it from racing the Sunday
+# 03:00 election-week tick at the git-push step.
+concurrency:
+  group: cyprus-db-write
+  cancel-in-progress: false
+
 jobs:
   discover:
     runs-on: ubuntu-latest
