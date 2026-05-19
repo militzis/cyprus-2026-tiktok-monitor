@@ -138,7 +138,17 @@ def main():
                    help='Skip rows where estimated_spend_eur_mid is already set (incremental mode).')
     p.add_argument('--master-only', action='store_true',
                    help='Only touch the master DB (skip both public DBs). Use when local-only.')
+    p.add_argument('--db', default=None,
+                   help='Override DB path. Overrides --master-only and the 3-DB sweep. '
+                        'Useful in CI where POLITICIAN_ADS_DB env var points to deploy public DB.')
     args = p.parse_args()
+
+    # CI/cron path: --db (or POLITICIAN_ADS_DB env var) overrides everything
+    env_db = args.db or os.environ.get('POLITICIAN_ADS_DB')
+    if env_db:
+        print(f"  CPM bounds: low=€{CPM_LOW}/k  mid=€{CPM_MID}/k  high=€{CPM_HIGH}/k\n")
+        compute_for_db(env_db, only_null=args.only_null)
+        return
 
     print(f"  CPM bounds: low=€{CPM_LOW}/k  mid=€{CPM_MID}/k  high=€{CPM_HIGH}/k\n")
     targets = [MASTER_DB] if args.master_only else [MASTER_DB, PUB_OD, PUB_DP]

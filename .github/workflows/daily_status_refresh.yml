@@ -54,6 +54,32 @@ jobs:
           set -euo pipefail
           python refresh_ad_statuses.py --since 24h --limit 500
 
+      # Tier-2 enrichment: pulls targeting / age / gender / interest /
+      # per-country reach into the DB for any ad we haven't enriched yet.
+      # Cap at 300/day to bound the API spend & runtime (≈ 2.5 min). The
+      # `--since-days 30` option also re-enriches stale records so targeting
+      # changes don't go undetected forever. Without this, the dashboard's
+      # targeting/audience columns stay mostly NULL.
+      - name: Enrich ad targeting + demographics (tier 2)
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python tiktok_tier2_fetch.py --limit 300 --since-days 30
+
+      # Re-compute spend estimates for any newly-discovered or
+      # newly-refreshed ads. Cheap (no API calls) and idempotent.
+      # Without this, freshly-pulled rows have €0 estimates until a
+      # human remembers to run it manually.
+      - name: Recompute spend estimates for new ads
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python compute_spend_estimates.py --only-null
+
       # Claude-API second-opinion review of any advertisers promoted
       # in the last 14 days. Catches the class of misclassification we
       # discovered today (@petrouiakovos / @champis_me_p / @marioshaperis)
