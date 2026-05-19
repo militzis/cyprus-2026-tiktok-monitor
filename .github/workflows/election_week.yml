@@ -34,10 +34,17 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    # 45 not 30: refresh alone is ~400×2.5s ≈ 17min, and 429 backoffs can
-    # double that. 30min wall cancelled the 2026-05-19 silence-window run
-    # mid-refresh. 45 keeps a safety margin while still bounding cost.
-    timeout-minutes: 45
+    # 60min bumped from 45 after 2026-05-19 22:01 UTC: --limit 400 refresh
+    # alone consumed all 45 minutes (TikTok API rate-limit storm —
+    # measured ~6.7s/ad vs assumed 2.5s). Everything downstream skipped,
+    # so the DB wasn't even committed. Lowering --limit too (see below).
+    timeout-minutes: 60
+    # Force unbuffered stdout across every step so we can SEE script
+    # progress in the GitHub log. Without this Python buffers prints
+    # until exit — the 22:01 UTC run printed zero lines in 45 minutes
+    # because the script was killed before its buffer flushed.
+    env:
+      PYTHONUNBUFFERED: "1"
     permissions:
       contents: write
 
@@ -69,11 +76,13 @@ jobs:
           POLITICIAN_ADS_DB:    politician_ads_public.db
         run: |
           set -euo pipefail
-          # --limit 400 fits inside the 45min job wall with margin for 429
-          # backoffs. 2.0s per-call throttle × 400 ads ≈ 13min best case;
-          # under load with retries we've measured ~20-25min. 600 here was
-          # the cause of the 30m timeout on 2026-05-19 03:00 UTC.
-          python refresh_ad_statuses.py --since 3h --limit 400
+          # --limit 200 (down from 400): measured throughput under election-week
+          # API load is ~6.7s/ad including 429 backoffs (not the 2.5s we
+          # estimated). 400 burned the entire 45m wall on 2026-05-19 22:01 UTC
+          # so EVERY downstream step was skipped — no commit, no silence-check
+          # data saved. 200 × 6.7s ≈ 22min leaves ~38min for the rest.
+          # Coverage: 200 × 8 ticks/day = 1600/day, on top of daily's 500/day.
+          python refresh_ad_statuses.py --since 3h --limit 200
 
       # Light discovery — only the content-keyword sweep, not the full
       # advertiser-by-advertiser one (which takes 30+ min). Catches new
@@ -109,7 +118,9 @@ jobs:
           POLITICIAN_ADS_DB:    politician_ads_public.db
         run: |
           set -euo pipefail
-          python tiktok_tier2_fetch.py --limit 150
+          # --limit 75 (down from 150): tier2 also hits TikTok API; budget
+          # for it within the remaining ~38min of the 60min wall after refresh.
+          python tiktok_tier2_fetch.py --limit 75
 
       - name: Recompute spend on new ads
         env:
@@ -131,8 +142,10 @@ jobs:
             echo "::warning::ANTHROPIC_API_KEY not set — skipping auto-review."
             exit 0
           fi
-          python auto_review.py --bucket recent_promotions --limit 20
-          python auto_review.py --bucket lower_confidence  --limit 10
+          # Halved limits (was 20+10) to stay inside the 60min wall after
+          # the refresh + tier2 budget cuts. Anthropic API ~2-3s per handle.
+          python auto_review.py --bucket recent_promotions --limit 10
+          python auto_review.py --bucket lower_confidence  --limit 5
 
       - name: Commit + push if anything changed
         run: |
