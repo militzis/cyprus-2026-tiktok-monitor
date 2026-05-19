@@ -1,0 +1,197 @@
+name: Election week — intensive monitoring (every 3 hours)
+
+# Runs every 3 hours during the final week before Cyprus 2026 parliamentary
+# elections. Catches:
+#   - Last-minute takedowns by TikTok (within 3h instead of 24h)
+#   - Newly-registered candidate accounts in the final days
+#   - Spend surges as campaigns make their final push
+#   - **Election-silence violations** — ads still running in the 24-48h
+#     blackout immediately before voting (Cyprus electoral law)
+#
+# Disable this workflow after election day by either:
+#   1. Removing the cron line (keep workflow_dispatch for manual reuse), OR
+#   2. Renaming the file to .yml.disabled until next cycle
+#
+# This is in addition to (not replacing) the daily + weekly workflows.
+# The 3-hour cadence is the sweet spot between coverage and rate-limit
+# safety: hourly hammers the TikTok API; 6-hourly is too slow to catch
+# election-day takedowns or new last-minute advertisers.
+
+on:
+  schedule:
+    # Every 3 hours, every day (active only during the election week)
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+
+# Prevent overlapping runs: if a previous 3-hour run is still going,
+# skip this one. Avoids two CI jobs racing on the same DB.
+concurrency:
+  group: election-week-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30   # bounded; usually finishes in 8-15 min
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install deps
+        run: |
+          set -euo pipefail
+          pip install --quiet requests python-dotenv filelock anthropic pandas
+
+      # Refresh statuses on a tighter window — checks every ad whose
+      # last_status_check is >3h old. Catches TikTok takedowns within
+      # ~3h instead of 24h. Critical because election-week takedowns
+      # are the most newsworthy enforcement events.
+      - name: Refresh ad statuses (3h cadence)
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python refresh_ad_statuses.py --since 3h --limit 600
+
+      # Light discovery — only the content-keyword sweep, not the full
+      # advertiser-by-advertiser one (which takes 30+ min). Catches new
+      # advertisers within 3h of them registering.
+      - name: Lightweight discovery sweep
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python discover_content_keywords.py
+
+      # Restore + save discovery cache so we don't re-sweep keywords
+      # every 3h.
+      - name: Cache discovery state across runs
+        uses: actions/cache@v4
+        with:
+          path: |
+            fetch_state.json
+            tiktok_discovered.json
+            content_keyword_discovery.json
+            tiktok_token_cache.json
+          key: election-week-cache-${{ github.run_id }}
+          restore-keys: |
+            election-week-cache-
+            tiktok-discovery-cache-
+
+      - name: Enrich newly-discovered ads
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python tiktok_tier2_fetch.py --limit 150
+
+      - name: Recompute spend on new ads
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python compute_spend_estimates.py --only-null
+
+      # Auto-review every new promotion as soon as it lands. During
+      # election week we want to catch misclassified high-profile
+      # accounts within hours, not days.
+      - name: Auto-review (recent + lower-confidence)
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          POLITICIAN_ADS_DB:  politician_ads_public.db
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not set — skipping auto-review."
+            exit 0
+          fi
+          python auto_review.py --bucket recent_promotions --limit 20
+          python auto_review.py --bucket lower_confidence  --limit 10
+
+      - name: Commit + push if anything changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add politician_ads_public.db
+          if git diff --cached --quiet; then
+            echo "No changes this run."
+          else
+            git commit -m "auto: election-week monitor $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
+
+      # Election-silence violation alert — runs at every cron tick.
+      # Inserts an issue/annotation if ads are still ACTIVE within
+      # the 24h blackout window. The blackout dates are hardcoded for
+      # the May 24-25, 2026 elections; update if dates shift.
+      - name: Check for election-silence violations
+        if: always()
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python - <<'PYEOF'
+          import os, sqlite3
+          from datetime import datetime, timezone
+
+          # Election-silence window: from midnight Saturday until polls close.
+          # Cyprus parliamentary elections 2026 — Sunday 2026-05-24.
+          # The "silence" / blackout begins Friday 2026-05-22 at 18:00 Cyprus
+          # local (15:00 UTC). Adjust dates if final schedule shifts.
+          SILENCE_START_UTC = datetime(2026, 5, 22, 15, 0, tzinfo=timezone.utc)
+          SILENCE_END_UTC   = datetime(2026, 5, 24, 18, 0, tzinfo=timezone.utc)
+
+          now = datetime.now(timezone.utc)
+          if not (SILENCE_START_UTC <= now <= SILENCE_END_UTC):
+              print(f"  Not in silence window yet ({SILENCE_START_UTC} → {SILENCE_END_UTC} UTC). Skipping.")
+              raise SystemExit(0)
+
+          print(f"  ⚠️  WE ARE IN THE ELECTION-SILENCE WINDOW (now: {now.isoformat()})")
+          conn = sqlite3.connect(os.environ['POLITICIAN_ADS_DB'])
+          POLITICAL_TIERS = (
+              "'manual_resume','party_coordinator','political_movement',"
+              "'party_supporter','party_account'"
+          )
+          rows = conn.execute(f"""
+              SELECT advertiser_disclosed_name, ad_id, matched_candidate,
+                     matched_party, ad_url
+              FROM tiktok_ads
+              WHERE match_type IN ({POLITICAL_TIERS})
+                AND LOWER(ad_status) = 'active'
+              ORDER BY estimated_spend_eur_mid DESC NULLS LAST
+              LIMIT 50
+          """).fetchall()
+          if rows:
+              print(f"::error title=⚠️ {len(rows)} political ads still ACTIVE during election silence::")
+              for r in rows[:10]:
+                  print(f"  @{r[0]}  {r[2] or ''} ({r[3] or ''})  {r[4] or ''}")
+              # Don't fail the job — the violation IS the data; we want the
+              # commit + push to land so the dashboard shows it.
+          else:
+              print("  ✓ Zero political ads active during silence window.")
+          conn.close()
+          PYEOF
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error title=Election-week monitor FAILED::Check previous step's log."
+          exit 1

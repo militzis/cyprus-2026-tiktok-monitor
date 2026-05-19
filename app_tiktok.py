@@ -190,6 +190,55 @@ st.title("🎯 TikTok Political Ads — Cyprus 2026")
 st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.columns else '?'}")
 
 
+# ── Election-silence-window violation banner ────────────────────────────────
+# Lights up if we're inside the legal pre-election blackout AND there are
+# still political ads running. This is one of the strongest single
+# accountability signals the dashboard surfaces — TikTok runs banned
+# political content all the time, but running them during the legal
+# silence window is a separate, sharper violation visible to regulators.
+# Dates hardcoded for Cyprus 2026 parliamentary election; adjust each cycle.
+from datetime import timezone as _tz, datetime as _dt
+SILENCE_START_UTC = _dt(2026, 5, 22, 15, 0, tzinfo=_tz.utc)   # Fri 18:00 Cyprus
+SILENCE_END_UTC   = _dt(2026, 5, 24, 18, 0, tzinfo=_tz.utc)   # Sun 21:00 Cyprus
+ELECTION_DAY      = _dt(2026, 5, 24, 12, 0, tzinfo=_tz.utc)   # midpoint
+_now_utc = _dt.now(_tz.utc)
+_in_silence = SILENCE_START_UTC <= _now_utc <= SILENCE_END_UTC
+_days_to_election = (ELECTION_DAY - _now_utc).days
+
+if _in_silence:
+    POLITICAL_TIERS_SET = {'manual_resume', 'party_coordinator',
+                           'political_movement', 'party_supporter', 'party_account'}
+    _live_during_silence = df[
+        df['match_type'].isin(POLITICAL_TIERS_SET)
+        & df['ad_status'].fillna('').str.lower().eq('active')
+    ]
+    if len(_live_during_silence) > 0:
+        _spend_alive = 0
+        if 'estimated_spend_eur_mid' in _live_during_silence.columns:
+            _spend_alive = int(_live_during_silence['estimated_spend_eur_mid'].fillna(0).sum())
+        st.error(
+            f"🚨 **ELECTION-SILENCE VIOLATION** — we are inside the "
+            f"Cyprus pre-election blackout window "
+            f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}) "
+            f"and **{len(_live_during_silence)} political ads are still ACTIVE on TikTok** "
+            f"(estimated €{_spend_alive:,} of political spend live during blackout). "
+            f"See the 🚨 Enforcement tab for the full list and a "
+            f"bulk-report-ready CSV."
+        )
+    else:
+        st.success(
+            f"✅ Inside the election-silence window "
+            f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}) "
+            f"— zero political ads currently active. TikTok / advertisers complying."
+        )
+elif 0 <= _days_to_election <= 7:
+    st.info(
+        f"🗳️ **{_days_to_election} day(s)** until Cyprus 2026 parliamentary "
+        f"elections (Sun 24 May). Intensive 3-hour monitoring is active — see "
+        f"the 🚨 Enforcement tab for the live violation count."
+    )
+
+
 # ── Pipeline health badge ─────────────────────────────────────────────────────
 # Reads the most recent row from pipeline_health (written by
 # refresh_ad_statuses.py at the end of each run). If older than 25h OR if
@@ -654,6 +703,62 @@ with tab_spend:
             })
 
         st.divider()
+
+        # ─── Final-week surge detector ─────────────────────────────────
+        # Election-week intensification: who's pouring money in NOW?
+        # Compares each candidate's last-7-day spend to their previous-
+        # 7-day spend to surface the largest accelerations. Catches
+        # last-minute campaign pushes that may evade ordinary monitoring.
+        st.divider()
+        st.markdown("### 🗳️ Final-week spend acceleration")
+        st.caption(
+            "Candidates ordered by *spend in the last 7 days vs the 7 days "
+            "before that*. A large positive delta means a late campaign "
+            "push — common in the final week before an election, and a "
+            "signal worth watching for compliance / disclosure violations."
+        )
+        _today = pd.Timestamp.today().normalize()
+        _last7  = _today - pd.Timedelta(days=7)
+        _prev7  = _today - pd.Timedelta(days=14)
+        _last_window = f[(f['first_shown'] >= _last7)]
+        _prev_window = f[(f['first_shown'] >= _prev7) & (f['first_shown'] < _last7)]
+
+        def _candidate_spend(window):
+            return (window[window['match_type'] == 'manual_resume']
+                     .groupby('matched_candidate', as_index=False)
+                     .agg(eur=('estimated_spend_eur_mid', 'sum'),
+                          ads=('ad_id', 'count'),
+                          party=('matched_party', 'first'),
+                          district=('matched_district', 'first'),
+                          handle=('handle', 'first')))
+
+        cand_last = _candidate_spend(_last_window).rename(columns={
+            'eur': 'eur_last7', 'ads': 'ads_last7'})
+        cand_prev = _candidate_spend(_prev_window).rename(columns={
+            'eur': 'eur_prev7', 'ads': 'ads_prev7'})
+        accel = cand_last.merge(
+            cand_prev[['matched_candidate', 'eur_prev7', 'ads_prev7']],
+            on='matched_candidate', how='outer').fillna(0)
+        accel['delta_eur'] = accel['eur_last7'] - accel['eur_prev7']
+        accel = accel.sort_values('delta_eur', ascending=False).head(15)
+
+        if accel.empty or accel['delta_eur'].sum() == 0:
+            st.info("No spend recorded in either the last-7 or prev-7 day window.")
+        else:
+            accel['profile'] = accel['handle'].apply(
+                lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
+            st.dataframe(
+                accel[['matched_candidate', 'party', 'district',
+                       'eur_prev7', 'eur_last7', 'delta_eur',
+                       'ads_prev7', 'ads_last7', 'profile']],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    'eur_prev7':  st.column_config.NumberColumn('€ prev 7d', format='€%d'),
+                    'eur_last7':  st.column_config.NumberColumn('€ last 7d', format='€%d'),
+                    'delta_eur':  st.column_config.NumberColumn('Δ €',       format='€%+d'),
+                    'profile':    st.column_config.LinkColumn('👤', display_text='Open'),
+                }
+            )
 
         # ─── Spend over time (weekly) ─────────────────────────────────
         st.markdown("### Estimated spend over time (weekly)")
