@@ -636,7 +636,7 @@ Excluded: `commentator`, `news_outlet`, `podcast`, `satirist`, `politician_non_c
 
 **Median days to removal** — for each removed ad, `julianday(observed_at) - julianday(first_shown)` from `tiktok_ad_status_changes`, then the median.
 
-**€ estimates** — `times_shown_lower/upper_bound × CPM / 1000`. CPMs: €3 (low) / €5 (mid) / €8 (high). Mid is reported here. Bounded by `--limit 30` per cron run on auto-review, so spend numbers might lag slightly for the freshest ads.
+**€ estimates** — `times_shown_lower/upper_bound × CPM / 1000`. CPMs: €3 (low) / €5 (mid) / €8 (high). Mid is the headline figure here. Estimates are refreshed by `compute_spend_estimates.py --only-null` in every cron tick, so newly-discovered ads pick up an estimate within hours of being indexed.
 
 **Why this is not a perfect measure of enforcement** —
 1. We only see what TikTok itself publishes in the Commercial Content Library; ads that were never indexed don't appear.

@@ -20,7 +20,7 @@ Usage:
   python refresh_ad_statuses.py --since 7d       # refresh ads not checked in 7 days
   python refresh_ad_statuses.py --limit 200      # cap API calls (rate-limit safety)
 """
-import os, sys, time, sqlite3, argparse, json
+import os, sys, time, sqlite3, argparse, json, subprocess
 from datetime import datetime, timedelta
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +30,13 @@ DB = os.environ.get('POLITICIAN_ADS_DB',
                     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  'politician_ads_public.db'))
 AD_DETAIL_URL = f"{t.API_BASE}/v2/research/adlib/ad/detail/"
+
+# How often to git-commit + push the in-progress DB inside CI. The 2026-05-19
+# 22:01 UTC election-week run was killed at the 45min wall mid-refresh; ALL
+# the work it had done was lost because the workflow's commit step never ran.
+# Pushing every N ads turns a runner-timeout into "we kept the first ~N ads
+# of progress" instead of "we lost everything."
+CHECKPOINT_EVERY = 50
 
 
 def ensure_schema(conn: sqlite3.Connection):
@@ -158,6 +165,54 @@ def _refresh_impl(args):
         conn.close()
 
 
+def _is_ci() -> bool:
+    """True when running inside GitHub Actions (or any env that sets this)."""
+    return os.environ.get('GITHUB_ACTIONS', '').lower() == 'true'
+
+
+def _checkpoint_push(label: str) -> None:
+    """Commit + push the current DB to origin/main so a runner-timeout
+    doesn't discard in-flight refresh progress. CI-only — a no-op locally.
+    Best-effort: any failure (no changes, push conflict, missing config)
+    is logged but never raises, because losing a checkpoint is strictly
+    better than losing the whole refresh by aborting on it.
+
+    Git identity is passed via env vars rather than `git config` so we
+    don't pollute the runner's global config (which the workflow's later
+    'Commit + push' step sets itself).
+    """
+    if not _is_ci():
+        return
+    env = {
+        **os.environ,
+        'GIT_AUTHOR_NAME':     'github-actions[bot]',
+        'GIT_AUTHOR_EMAIL':    'github-actions[bot]@users.noreply.github.com',
+        'GIT_COMMITTER_NAME':  'github-actions[bot]',
+        'GIT_COMMITTER_EMAIL': 'github-actions[bot]@users.noreply.github.com',
+    }
+    try:
+        # Skip if nothing actually changed on disk (avoids empty commits
+        # when the first batch of N ads happened to all be unchanged).
+        diff = subprocess.run(['git', 'diff', '--quiet', '--', DB],
+                              capture_output=True)
+        if diff.returncode == 0:
+            return
+        subprocess.run(['git', 'add', DB], env=env, check=True,
+                       capture_output=True)
+        subprocess.run(
+            ['git', 'commit', '-m', f'auto: refresh checkpoint — {label}'],
+            env=env, check=True, capture_output=True,
+        )
+        subprocess.run(['git', 'push', 'origin', 'HEAD'],
+                       env=env, check=True, capture_output=True)
+        print(f"  ✓ checkpoint pushed: {label}", flush=True)
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b'').decode('utf-8', 'replace')[:300]
+        print(f"  ⚠ checkpoint failed ({e.returncode}): {stderr}", flush=True)
+    except Exception as e:
+        print(f"  ⚠ checkpoint exception: {e!r}", flush=True)
+
+
 def _refresh_loop(args, conn):
     """Inner loop. Returns (n_changed, n_unchanged, n_failed)."""
 
@@ -242,6 +297,14 @@ def _refresh_loop(args, conn):
         conn.commit()
         # Light throttle to avoid hammering the API
         time.sleep(getattr(t, 'REQUEST_DELAY', 0.5))
+
+        # CI checkpoint: every CHECKPOINT_EVERY ads, commit + push the DB
+        # state so a runner-timeout doesn't waste the work we've already
+        # done. Local-dev no-op (gated on GITHUB_ACTIONS env var).
+        if i % CHECKPOINT_EVERY == 0:
+            _checkpoint_push(
+                f'{i}/{len(rows)} ads (changes={n_changed}, errors={n_failed})'
+            )
 
     # Don't close conn here — _refresh_impl owns it (so the heartbeat
     # row can be written in the finally block before close).
