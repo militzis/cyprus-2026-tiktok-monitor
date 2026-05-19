@@ -19,7 +19,11 @@ importlib.reload(t)
 import requests
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB   = os.path.join(BASE, 'politician_ads.db')
+# Honour POLITICIAN_ADS_DB so CI (which only has the public DB checked out)
+# doesn't crash on a missing tiktok_ads table. Falls back to the master path
+# alongside the script for local dev. Matches refresh_ad_statuses.py.
+DB   = os.environ.get('POLITICIAN_ADS_DB',
+                      os.path.join(BASE, 'politician_ads.db'))
 SIDE_CACHE = os.path.join(BASE, 'content_keyword_discovery.json')
 
 # ── Keyword universe ──────────────────────────────────────────────────────────

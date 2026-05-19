@@ -32,7 +32,10 @@ concurrency:
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # bounded; usually finishes in 8-15 min
+    # 45 not 30: refresh alone is ~400×2.5s ≈ 17min, and 429 backoffs can
+    # double that. 30min wall cancelled the 2026-05-19 silence-window run
+    # mid-refresh. 45 keeps a safety margin while still bounding cost.
+    timeout-minutes: 45
     permissions:
       contents: write
 
@@ -64,7 +67,11 @@ jobs:
           POLITICIAN_ADS_DB:    politician_ads_public.db
         run: |
           set -euo pipefail
-          python refresh_ad_statuses.py --since 3h --limit 600
+          # --limit 400 fits inside the 45min job wall with margin for 429
+          # backoffs. 2.0s per-call throttle × 400 ads ≈ 13min best case;
+          # under load with retries we've measured ~20-25min. 600 here was
+          # the cause of the 30m timeout on 2026-05-19 03:00 UTC.
+          python refresh_ad_statuses.py --since 3h --limit 400
 
       # Light discovery — only the content-keyword sweep, not the full
       # advertiser-by-advertiser one (which takes 30+ min). Catches new
