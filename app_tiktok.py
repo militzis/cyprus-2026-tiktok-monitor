@@ -81,7 +81,7 @@ def load_ads():
     # Convert date columns
     for col in ('first_shown', 'last_shown'):
         df[col] = pd.to_datetime(df[col], errors='coerce')
-    # Derive: kind, days_active
+    # Derive: kind, days_active, link columns
     def media_kind(row):
         try:
             v = json.loads(row['videos_json'] or '[]')
@@ -95,6 +95,33 @@ def load_ads():
         lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
     df['library_url'] = df['ad_id'].apply(
         lambda a: f"https://library.tiktok.com/ads/detail/?ad_id={a}")
+
+    # Derive video_url + image_url as top-level columns so every table can
+    # surface a direct creative link without re-parsing videos_json each
+    # time. CDN URLs expire ~6h after fetch; refresh_ad_statuses /
+    # discover_tiktok_ads re-populate them automatically. Stale links
+    # 404 but the library_url + profile_url still work as fallback.
+    def first_video_url(vj):
+        try:
+            arr = json.loads(vj or '[]')
+            return arr[0].get('url', '') if arr else ''
+        except Exception:
+            return ''
+    def first_image_url(ij):
+        try:
+            arr = json.loads(ij or '[]')
+            if not arr:
+                return ''
+            first = arr[0]
+            return first if isinstance(first, str) else first.get('url', '')
+        except Exception:
+            return ''
+    df['video_url'] = df['videos_json'].apply(first_video_url)
+    df['image_url'] = df['image_urls_json'].apply(first_image_url)
+    # Combined "creative" link: video if present, otherwise image. Lets
+    # every table show one column instead of two.
+    df['creative_url'] = df.apply(
+        lambda r: r['video_url'] or r['image_url'], axis=1)
     return df
 
 @st.cache_data(ttl=60)
@@ -577,13 +604,15 @@ with tab_enforce:
             lambda h: f"https://www.tiktok.com/@{h}" if h and not str(h).isdigit() else "")
         cols_to_show = ['handle', 'matched_candidate', 'matched_party',
                         'ad_id', 'first_shown', 'last_shown',
-                        'estimated_spend_eur_mid', 'ad_url', 'profile_url']
+                        'estimated_spend_eur_mid', 'ad_url', 'profile_url',
+                        'creative_url']
         st.dataframe(
             live[cols_to_show],
             use_container_width=True, hide_index=True,
             column_config={
                 'ad_url':                  st.column_config.LinkColumn('▶ ad library', display_text='Open'),
                 'profile_url':             st.column_config.LinkColumn('👤 profile',   display_text='Open'),
+                'creative_url':            st.column_config.LinkColumn('🎬 creative',  display_text='View'),
                 'estimated_spend_eur_mid': st.column_config.NumberColumn('€ mid', format='€%d'),
                 'first_shown':             st.column_config.DateColumn(),
                 'last_shown':              st.column_config.DateColumn(),
@@ -1372,11 +1401,20 @@ with tab_raw:
     st.subheader(f"Total ads: {len(f)}")
     show_cols = ['match_type', 'handle', 'matched_candidate', 'matched_party',
                  'matched_district', 'ad_id', 'first_shown', 'last_shown',
-                 'ad_status', 'reach_raw', 'kind', 'profile_url', 'library_url']
+                 'ad_status', 'reach_raw', 'kind', 'profile_url',
+                 'library_url', 'creative_url']
+    st.caption(
+        "🎬 *creative* links the video/image CDN URL directly — "
+        "useful for verifying or sharing the actual ad creative. "
+        "CDN URLs expire ~6 hours after the script last fetched them; "
+        "if a link returns 404, re-run `discover_tiktok_ads.py` or "
+        "`refresh_ad_statuses.py` to refresh."
+    )
     st.dataframe(f[show_cols], use_container_width=True, hide_index=True,
                  column_config={
-                     'profile_url': st.column_config.LinkColumn('🔗 profile', display_text='Open profile'),
-                     'library_url': st.column_config.LinkColumn('▶ ad library', display_text='Open ad'),
+                     'profile_url':  st.column_config.LinkColumn('🔗 profile',    display_text='Open profile'),
+                     'library_url':  st.column_config.LinkColumn('▶ ad library', display_text='Open ad'),
+                     'creative_url': st.column_config.LinkColumn('🎬 creative',   display_text='View'),
                  })
     csv = f.to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download CSV", csv,

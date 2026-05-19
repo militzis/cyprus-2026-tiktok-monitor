@@ -68,6 +68,10 @@ DERIVED_COLUMNS = {
     'first_seen',        # .agg(first_seen=('first_shown','min'))
     'last_seen',         # .agg(last_seen=('last_shown','max'))
     'has_transcript',    # .agg(has_transcript=('transcript', notna.any))
+    # Creative-link derived columns (computed from videos_json / image_urls_json)
+    'video_url',         # first videos_json[0].url
+    'image_url',         # first image_urls_json[0]
+    'creative_url',      # video_url OR image_url (combined)
 }
 
 # Column aliases — load_ads() does `advertiser_disclosed_name AS handle`,
