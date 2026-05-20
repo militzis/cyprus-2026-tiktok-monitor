@@ -133,6 +133,17 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           python status_change_report.py --since 24h --output "reports/${DATE}.md"
 
+      # CSV companion to the markdown report — one row per status change
+      # + an aggregated summary. Lands in reports/daily/ alongside the
+      # markdown. User pulls both with one `git pull`. Date-stamped +
+      # non-overwriting: a re-run the same day adds an _HHMM suffix.
+      - name: Generate daily CSV (changes + summary)
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python export_tiktok_daily_csv.py --since 24h
+
       # Drop content_keyword + FP + numeric-handle rows that discovery
       # may have written. Mirrors build_public_db.py's filter so the
       # public DB stays "verified political ads only" instead of leaking

@@ -40,6 +40,7 @@ CANONICAL_IN_DEPLOY = [
     'find_canonical_post_urls.py',
     'strip_public_db.py',
     'refresh_known_catalogs.py',
+    'export_tiktok_daily_csv.py',
 ]
 
 
