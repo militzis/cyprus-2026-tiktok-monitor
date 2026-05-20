@@ -1,11 +1,19 @@
-"""Refresh ad statuses by re-querying TikTok's /v2/research/adlib/ad/detail/ endpoint.
+"""Refresh ad statuses via /ad/query/ (per-advertiser bulk) — NOT /ad/detail/.
 
-For every ad in the DB:
-  1. Call ad/detail/ with the ad_id
-  2. Compare the returned `status` + `status_statement` to what we have
-  3. If different (or this is the first check), INSERT a row into
-     tiktok_ad_status_changes and UPDATE the canonical ad_status / status_statement
-  4. Bump last_status_check timestamp
+Strategy (updated 2026-05-20):
+  For each distinct advertiser_id in the DB, call query_ads_for_advertiser()
+  which pages through /v2/research/adlib/ad/query/ and returns all their CY ads
+  with the current status + status_statement in one round-trip per ~50 ads.
+
+  OLD approach (broken): called /ad/detail/ once per ad — 200 ads × 8 election-week
+  ticks/day = 1,600 daily calls, PLUS 312 from the daily run = ~2,000 calls/day.
+  The /ad/detail/ endpoint has a low daily quota (~500 calls) and was being exhausted
+  by lunchtime, causing every afternoon election-week run to hit persistent 429s and
+  burn through the 60-minute wall on backoffs.
+
+  NEW approach: ~74 known advertisers × ~2 pages each = ~150 /ad/query/ calls/day.
+  /ad/query/ has a much higher rate limit (it is the bulk discovery endpoint).
+  /ad/detail/ is now reserved for the enrich step only (demographics, targeting).
 
 Status values seen so far from TikTok's API:
   - "active"               — ad is currently being shown
@@ -15,10 +23,10 @@ Status values seen so far from TikTok's API:
   - "expired"
 
 Usage:
-  python refresh_ad_statuses.py                  # refresh ads not checked in 24h
-  python refresh_ad_statuses.py --all            # force-refresh everything
-  python refresh_ad_statuses.py --since 7d       # refresh ads not checked in 7 days
-  python refresh_ad_statuses.py --limit 200      # cap API calls (rate-limit safety)
+  python refresh_ad_statuses.py                  # refresh advertisers with stale checks
+  python refresh_ad_statuses.py --all            # force-refresh all advertisers
+  python refresh_ad_statuses.py --since 3h       # stale = not checked in last 3h
+  python refresh_ad_statuses.py --limit 50       # cap to first N advertisers
 """
 import os, sys, time, sqlite3, argparse, json, subprocess
 from datetime import datetime, timedelta
@@ -29,14 +37,14 @@ import discover_tiktok_ads as t
 DB = os.environ.get('POLITICIAN_ADS_DB',
                     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  'politician_ads_public.db'))
-AD_DETAIL_URL = f"{t.API_BASE}/v2/research/adlib/ad/detail/"
+# How often to git-commit + push the in-progress DB inside CI. With the old
+# per-ad approach, 50 ads ≈ 5 minutes. Now per-advertiser, 10 advertisers ≈
+# 5-10 API calls (still safe checkpoint cadence without over-committing).
+CHECKPOINT_EVERY = 10
 
-# How often to git-commit + push the in-progress DB inside CI. The 2026-05-19
-# 22:01 UTC election-week run was killed at the 45min wall mid-refresh; ALL
-# the work it had done was lost because the workflow's commit step never ran.
-# Pushing every N ads turns a runner-timeout into "we kept the first ~N ads
-# of progress" instead of "we lost everything."
-CHECKPOINT_EVERY = 50
+# How far back to query each advertiser's ad catalog. Wide enough to catch
+# all active election-campaign ads without re-fetching the full 2+ year history.
+REFRESH_SINCE_DAYS = 90
 
 
 def ensure_schema(conn: sqlite3.Connection):
@@ -104,20 +112,25 @@ def record_health(conn, run_kind, started_at, status,
     conn.commit()
 
 
-def fetch_ad_detail(ad_id: str) -> dict | None:
-    """Call /v2/research/adlib/ad/detail/ for a single ad_id."""
-    body = {'ad_id': ad_id}
-    fields = ','.join([
-        'ad.id', 'ad.status', 'ad.status_statement',
-        'ad.first_shown_date', 'ad.last_shown_date',
-        'advertiser.business_id', 'advertiser.business_name',
-    ])
-    try:
-        data = t._api_post(AD_DETAIL_URL, {'fields': fields}, body)
-    except Exception as e:
-        print(f"  ✗ ad {ad_id}: {e}")
-        return None
-    return (data.get('data') or {}).get('ad') or {}
+def _adv_ids_to_refresh(conn, args) -> list[str]:
+    """Return distinct advertiser_ids whose ads haven't been status-checked
+    recently (or all of them if --all). Returned as TEXT strings (as stored)."""
+    if args.all:
+        rows = conn.execute(
+            "SELECT DISTINCT advertiser_id FROM tiktok_ads WHERE advertiser_id IS NOT NULL"
+        ).fetchall()
+    else:
+        cutoff = (datetime.utcnow() - _parse_duration(args.since)).isoformat()
+        rows = conn.execute(
+            """SELECT DISTINCT advertiser_id FROM tiktok_ads
+               WHERE advertiser_id IS NOT NULL
+                 AND (last_status_check IS NULL OR last_status_check < ?)""",
+            (cutoff,)
+        ).fetchall()
+    ids = [r[0] for r in rows if r[0]]
+    if args.limit:
+        ids = ids[:args.limit]
+    return ids
 
 
 def refresh(args):
@@ -230,102 +243,121 @@ def _checkpoint_push(label: str) -> None:
 
 
 def _refresh_loop(args, conn):
-    """Inner loop. Returns (n_changed, n_unchanged, n_failed)."""
+    """Per-advertiser refresh via /ad/query/ bulk endpoint.
 
-    # Pick which ads to refresh
-    if args.all:
-        sel = "SELECT ad_id, advertiser_id, advertiser_disclosed_name AS handle, ad_status, status_statement FROM tiktok_ads"
-        params = ()
-    else:
-        # Default: ads NEVER checked, OR checked more than `since` ago
-        cutoff = (datetime.utcnow() - _parse_duration(args.since)).isoformat()
-        sel = """SELECT ad_id, advertiser_id, advertiser_disclosed_name AS handle,
-                        ad_status, status_statement
-                 FROM tiktok_ads
-                 WHERE last_status_check IS NULL OR last_status_check < ?"""
-        params = (cutoff,)
+    Returns (n_changed, n_unchanged, n_adv_errors):
+      n_changed     — ads whose status/statement changed this run
+      n_unchanged   — ads confirmed unchanged
+      n_adv_errors  — advertisers whose API call failed (ads inside skipped)
 
-    rows = conn.execute(sel, params).fetchall()
-    if args.limit:
-        rows = rows[:args.limit]
+    Uses /ad/query/ (not /ad/detail/) to avoid the low daily quota on the
+    per-ad detail endpoint. One /ad/query/ page covers up to 50 ads; ~74
+    known advertisers need ~2 pages each = ~150 API calls total per run,
+    vs the old 200+ calls to the rate-limited /ad/detail/ endpoint.
+    """
+    from datetime import timedelta as _td, date as _date
+    since_date = (_date.today() - _td(days=REFRESH_SINCE_DAYS)).strftime('%Y-%m-%d')
 
-    print(f"  candidates to refresh: {len(rows)}")
-    if not rows:
-        print("  nothing to do."); return (0, 0, 0)
+    adv_ids = _adv_ids_to_refresh(conn, args)
+    print(f"  advertisers to refresh: {len(adv_ids)} (since_date={since_date})",
+          flush=True)
+    if not adv_ids:
+        print("  nothing to do.")
+        return (0, 0, 0)
+
+    # Snapshot current DB state for O(1) lookups during the loop.
+    existing: dict[str, dict] = {}
+    for row in conn.execute("""SELECT ad_id, ad_status, status_statement,
+                                      advertiser_id,
+                                      advertiser_disclosed_name AS handle
+                               FROM tiktok_ads"""):
+        existing[row['ad_id']] = dict(row)
 
     t.get_access_token()
 
-    n_changed = 0
-    n_unchanged = 0
-    n_failed = 0
-    for i, r in enumerate(rows, 1):
-        if i % 25 == 0:
-            print(f"  [{i}/{len(rows)}] changes so far: {n_changed}, unchanged: {n_unchanged}, errors: {n_failed}")
-        detail = fetch_ad_detail(r['ad_id'])
-        if detail is None:
-            n_failed += 1
+    n_changed, n_unchanged, n_adv_errors = 0, 0, 0
+
+    for i, adv_id in enumerate(adv_ids, 1):
+        try:
+            biz_id = int(adv_id)
+        except (TypeError, ValueError):
+            print(f"  ⚠ non-numeric advertiser_id {adv_id!r} — skipped", flush=True)
+            n_adv_errors += 1
             continue
 
-        new_status   = detail.get('status') or 'unknown'
-        new_stmt     = detail.get('status_statement')
-        prev_status  = r['ad_status'] or 'unknown'
-        prev_stmt    = r['status_statement']
+        try:
+            items = t.query_ads_for_advertiser(biz_id, since_date)
+        except t.RateLimitExceeded:
+            print(f"  [429] quota hit at advertiser {i}/{len(adv_ids)} — stopping.",
+                  flush=True)
+            break
+        except Exception as e:
+            print(f"  ✗ advertiser {adv_id}: {type(e).__name__}: {e}", flush=True)
+            n_adv_errors += 1
+            continue
 
         now = datetime.utcnow().isoformat()
-        # Log to tiktok_ad_status_changes ONLY for meaningful transitions:
-        #   - ad_status itself changed (active→inactive, etc.), OR
-        #   - status_statement gained a takedown signal that wasn't there
-        #     before (the words derive_status() actually looks at)
-        # Statement-only diffs of N/A ↔ N/A or "advertiser_account_deleted..." ↔
-        # N/A (from prior bookkeeping markers) used to flood the log with
-        # active→active rows — 22 noise rows in a single run earlier today.
-        prev_stmt_l = (prev_stmt or '').lower()
-        new_stmt_l  = (new_stmt or '').lower()
-        TAKEDOWN_SIGNALS = ('removed', 'violation', 'deleted', 'expired')
-        prev_signal = any(s in prev_stmt_l for s in TAKEDOWN_SIGNALS)
-        new_signal  = any(s in new_stmt_l for s in TAKEDOWN_SIGNALS)
-        is_real_change = (new_status != prev_status) or (new_signal != prev_signal)
+        for item in items:
+            ad_obj = item.get('ad', {}) or {}
+            ad_id  = str(ad_obj.get('id') or '')
+            if not ad_id:
+                continue
 
-        if is_real_change:
-            conn.execute("""INSERT INTO tiktok_ad_status_changes
-                            (ad_id, observed_at, prev_status, new_status,
-                             prev_statement, new_statement, advertiser_id, handle)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                         (r['ad_id'], now, prev_status, new_status,
-                          prev_stmt, new_stmt, r['advertiser_id'], r['handle']))
+            row = existing.get(ad_id)
+            if row is None:
+                continue  # not in our public DB (maybe stripped)
+
+            new_status = ad_obj.get('status') or 'unknown'
+            new_stmt   = ad_obj.get('status_statement') or ''
+            prev_status = row.get('ad_status') or 'unknown'
+            prev_stmt   = row.get('status_statement') or ''
+            handle      = row.get('handle') or ''
+
+            TAKEDOWN_SIGNALS = ('removed', 'violation', 'deleted', 'expired')
+            prev_signal = any(s in prev_stmt.lower() for s in TAKEDOWN_SIGNALS)
+            new_signal  = any(s in new_stmt.lower()  for s in TAKEDOWN_SIGNALS)
+            is_real_change = (new_status != prev_status) or (new_signal != prev_signal)
+
+            if is_real_change:
+                conn.execute("""INSERT INTO tiktok_ad_status_changes
+                    (ad_id, observed_at, prev_status, new_status,
+                     prev_statement, new_statement, advertiser_id, handle)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ad_id, now, prev_status, new_status,
+                     prev_stmt, new_stmt, adv_id, handle))
+                print(f"  ⚡ {ad_id}  @{handle:<25}  "
+                      f"{prev_status} -> {new_status}  "
+                      f"({new_stmt[:60]})", flush=True)
+                n_changed += 1
+                # Update snapshot so subsequent advertisers' dupe-ad checks work
+                existing[ad_id]['ad_status']      = new_status
+                existing[ad_id]['status_statement'] = new_stmt
+            else:
+                n_unchanged += 1
+
+            # Always bump last_status_check + refresh status/statement
             conn.execute("""UPDATE tiktok_ads
-                            SET ad_status=?, status_statement=?, last_status_check=?
-                            WHERE ad_id=?""",
-                         (new_status, new_stmt, now, r['ad_id']))
-            print(f"  ⚡ {r['ad_id']}  @{r['handle'] or '?':<25}  "
-                  f"{prev_status} → {new_status}  "
-                  f"({(new_stmt or '')[:60]})")
-            n_changed += 1
-        else:
-            # Still update ad_status + status_statement if the API has a fresher
-            # value — just don't insert a row into the changes log.
-            conn.execute("""UPDATE tiktok_ads
-                            SET ad_status=?, status_statement=?, last_status_check=?
-                            WHERE ad_id=?""",
-                         (new_status, new_stmt, now, r['ad_id']))
-            n_unchanged += 1
+                SET ad_status=?, status_statement=?, last_status_check=?
+                WHERE ad_id=?""",
+                (new_status, new_stmt, now, ad_id))
 
         conn.commit()
-        # Light throttle to avoid hammering the API
-        time.sleep(getattr(t, 'REQUEST_DELAY', 0.5))
 
-        # CI checkpoint: every CHECKPOINT_EVERY ads, commit + push the DB
-        # state so a runner-timeout doesn't waste the work we've already
-        # done. Local-dev no-op (gated on GITHUB_ACTIONS env var).
+        if i % 10 == 0:
+            print(f"  [{i}/{len(adv_ids)}] advertisers done  "
+                  f"changes={n_changed}  unchanged={n_unchanged}  "
+                  f"adv_errors={n_adv_errors}", flush=True)
+
+        # CI checkpoint every CHECKPOINT_EVERY advertisers
         if i % CHECKPOINT_EVERY == 0:
             _checkpoint_push(
-                f'{i}/{len(rows)} ads (changes={n_changed}, errors={n_failed})'
+                f'{i}/{len(adv_ids)} advertisers '
+                f'(changes={n_changed}, errors={n_adv_errors})'
             )
 
-    # Don't close conn here — _refresh_impl owns it (so the heartbeat
-    # row can be written in the finally block before close).
-    print(f"\n  ── done ──  changed: {n_changed}  unchanged: {n_unchanged}  errors: {n_failed}")
-    return (n_changed, n_unchanged, n_failed)
+    print(f"\n  ── done ──  changed: {n_changed}  unchanged: {n_unchanged}"
+          f"  adv_errors: {n_adv_errors}", flush=True)
+    return (n_changed, n_unchanged, n_adv_errors)
 
 
 def _parse_duration(s: str) -> timedelta:
