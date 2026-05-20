@@ -79,6 +79,19 @@ def _unique_path(base: str) -> str:
     return candidate
 
 
+def _effective_label(prev_status, new_status, new_statement) -> str:
+    """Use HEADLINE_TRANSITIONS by default, but UPGRADE to 'REMOVED BY
+    TIKTOK' when the statement carries a violation signal — TikTok flips
+    the status code to 'inactive' rather than 'removed_by_tiktok' and
+    discloses the takedown only in the statement. The 2026-05-20 first
+    daily report showed 49 'stopped running' rows that were actually all
+    real takedowns; this label fix surfaces that in the CSV directly."""
+    stmt = (new_statement or '').lower()
+    if 'removed' in stmt or 'violation' in stmt:
+        return 'REMOVED BY TIKTOK'
+    return HEADLINE_TRANSITIONS.get((prev_status or '', new_status or ''), '')
+
+
 def _write_changes_csv(rows, path: str) -> None:
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
@@ -90,8 +103,8 @@ def _write_changes_csv(rows, path: str) -> None:
             'first_shown', 'last_shown', 'ad_url',
         ])
         for r in rows:
-            label = HEADLINE_TRANSITIONS.get(
-                (r['prev_status'] or '', r['new_status'] or ''), '')
+            label = _effective_label(r['prev_status'], r['new_status'],
+                                     r['new_statement'])
             w.writerow([
                 (r['observed_at'] or '')[:19].replace('T', ' '),
                 r['handle'] or '',
@@ -112,6 +125,17 @@ def _write_changes_csv(rows, path: str) -> None:
             ])
 
 
+def _is_takedown(r) -> bool:
+    """True if THIS row represents a TikTok enforcement action — either
+    the status code says so OR the statement carries 'removed'/'violation'.
+    TikTok often flips status to 'inactive' while only disclosing the
+    takedown in the statement (49/49 of the 2026-05-20 cohort)."""
+    if (r['new_status'] or '') == 'removed_by_tiktok':
+        return True
+    stmt = (r['new_statement'] or '').lower()
+    return 'removed' in stmt or 'violation' in stmt
+
+
 def _write_summary_csv(rows, cutoff: str, path: str) -> None:
     by_transition        = Counter()
     by_candidate_removed = Counter()
@@ -120,7 +144,7 @@ def _write_summary_csv(rows, cutoff: str, path: str) -> None:
         prev = r['prev_status'] or 'unknown'
         new  = r['new_status']  or 'unknown'
         by_transition[(prev, new)] += 1
-        if new == 'removed_by_tiktok':
+        if _is_takedown(r):
             if r['matched_candidate']:
                 by_candidate_removed[r['matched_candidate']] += 1
             if r['matched_party']:
@@ -128,7 +152,7 @@ def _write_summary_csv(rows, cutoff: str, path: str) -> None:
 
     cand_to_party = {r['matched_candidate']: r['matched_party']
                      for r in rows
-                     if r['new_status'] == 'removed_by_tiktok' and r['matched_candidate']}
+                     if _is_takedown(r) and r['matched_candidate']}
 
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f)
