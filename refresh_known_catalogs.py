@@ -246,6 +246,22 @@ def main(since: str) -> int:
                     n_new_ads += 1
                     existing_ids.add(row['ad_id'])
             t.upsert_rows(new_rows)
+            # Stamp last_status_check so refresh_ad_statuses.py --since Xh
+            # skips these advertisers when it runs next (daily cron). Without
+            # this, both scripts query /ad/query/ for the same 74 advertisers
+            # in the same pipeline run, doubling the API load and causing 429s.
+            # Added 2026-05-20 after catalog refresh + status refresh were
+            # both switched to /ad/query/ and started exhausting the quota.
+            try:
+                _conn = sqlite3.connect(DB)
+                _conn.execute(
+                    "UPDATE tiktok_ads SET last_status_check = ? WHERE advertiser_id = ?",
+                    (datetime.utcnow().isoformat(), str(adv_id)),
+                )
+                _conn.commit()
+                _conn.close()
+            except Exception as _e:
+                print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}", flush=True)
 
             if i % 10 == 0:
                 print(f"  ... {i}/{n_advertisers} processed "

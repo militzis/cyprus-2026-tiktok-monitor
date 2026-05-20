@@ -65,24 +65,17 @@ jobs:
           set -euo pipefail
           pip install --quiet requests python-dotenv filelock anthropic pandas
 
-      # Refresh statuses on a tighter window — checks every ad whose
-      # last_status_check is >3h old. Catches TikTok takedowns within
-      # ~3h instead of 24h. Critical because election-week takedowns
-      # are the most newsworthy enforcement events.
-      - name: Refresh ad statuses (3h cadence)
-        env:
-          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
-          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
-          POLITICIAN_ADS_DB:    politician_ads_public.db
-        run: |
-          set -euo pipefail
-          # --limit 200 (down from 400): measured throughput under election-week
-          # API load is ~6.7s/ad including 429 backoffs (not the 2.5s we
-          # estimated). 400 burned the entire 45m wall on 2026-05-19 22:01 UTC
-          # so EVERY downstream step was skipped — no commit, no silence-check
-          # data saved. 200 × 6.7s ≈ 22min leaves ~38min for the rest.
-          # Coverage: 200 × 8 ticks/day = 1600/day, on top of daily's 500/day.
-          python refresh_ad_statuses.py --since 3h --limit 200
+      # NOTE (2026-05-20): refresh_ad_statuses.py step REMOVED from election-week.
+      # The original step called /ad/detail/ per ad; the 2026-05-20 rewrite
+      # switched it to /ad/query/ per advertiser — but refresh_known_catalogs.py
+      # (below) already calls /ad/query/ for the same 74 advertisers, so both
+      # scripts were competing for the same endpoint quota and causing 429s at
+      # advertiser ~71/74 of the catalog step. Removing the duplicate halves
+      # /ad/query/ load. Status updates are handled by refresh_known_catalogs.py
+      # which upserts ad_status + status_statement as a side effect. Change
+      # tracking (tiktok_ad_status_changes table) still runs once per day in
+      # daily_status_refresh.yml. Re-add this step only if /ad/query/ quota
+      # increases or the catalog step is removed.
 
       # Light discovery — only the content-keyword sweep, not the full
       # advertiser-by-advertiser one (which takes 30+ min). Catches new
