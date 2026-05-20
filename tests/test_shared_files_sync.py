@@ -39,6 +39,7 @@ CANONICAL_IN_DEPLOY = [
     'db_lock.py',
     'find_canonical_post_urls.py',
     'strip_public_db.py',
+    'refresh_known_catalogs.py',
 ]
 
 

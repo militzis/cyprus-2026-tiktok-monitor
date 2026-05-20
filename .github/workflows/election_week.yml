@@ -111,6 +111,22 @@ jobs:
             election-week-cache-
             tiktok-discovery-cache-
 
+      # Re-fetch CY ad catalogs for the ~74 known political-tier advertisers
+      # so new ads they post (in the final week of the campaign especially)
+      # land within hours instead of waiting for Sunday's weekly sweep.
+      # Without this step, refresh updates statuses on existing rows but
+      # never adds new ad rows from existing advertisers, and the keyword
+      # sweep explicitly skips known bids — so a candidate posting 5 new
+      # ads on Wednesday is invisible until next Monday.
+      - name: Refresh known advertisers' catalogs
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python refresh_known_catalogs.py
+
       - name: Enrich newly-discovered ads
         env:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}

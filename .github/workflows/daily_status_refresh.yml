@@ -63,6 +63,20 @@ jobs:
           set -euo pipefail
           python refresh_ad_statuses.py --since 24h --limit 500
 
+      # Re-fetch CY ad catalogs for known political-tier advertisers so
+      # new ads they post show up daily, not weekly. Without this step,
+      # refresh updates statuses on existing rows but never adds new
+      # ad rows from existing advertisers — so a candidate posting 5
+      # new ads since yesterday is invisible until Sunday's weekly run.
+      - name: Refresh known advertisers' catalogs
+        env:
+          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          POLITICIAN_ADS_DB:    politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python refresh_known_catalogs.py
+
       # Tier-2 enrichment: pulls targeting / age / gender / interest /
       # per-country reach into the DB for any ad we haven't enriched yet.
       # Cap at 300/day to bound the API spend & runtime (≈ 2.5 min). The
