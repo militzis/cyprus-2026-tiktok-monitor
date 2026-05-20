@@ -38,6 +38,7 @@ CANONICAL_IN_DEPLOY = [
     'tiktok_api.py',
     'db_lock.py',
     'find_canonical_post_urls.py',
+    'strip_public_db.py',
 ]
 
 

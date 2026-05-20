@@ -146,6 +146,19 @@ jobs:
           # 50 caps cost at ~$0.025/week worst case.
           python auto_review.py --bucket all_unreviewed --limit 50
 
+      # Strip content_keyword + FP + numeric-handle rows that discovery
+      # wrote to the public DB. Mirrors build_public_db.py's filter so
+      # the public dashboard stays "verified political ads only" rather
+      # than leaking raw keyword hits (the 2026-05-20 incident). Without
+      # this step, weekly's content-keyword sweep ADDS hundreds of
+      # unverified rows to the dashboard every Sunday.
+      - name: Strip non-public rows before commit
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python strip_public_db.py
+
       # ── Commit + push ────────────────────────────────────────────
       # Push the public DB so Streamlit Cloud picks up new advertisers.
       # We do NOT commit the JSON caches — they live in actions/cache,

@@ -119,6 +119,18 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           python status_change_report.py --since 24h --output "reports/${DATE}.md"
 
+      # Drop content_keyword + FP + numeric-handle rows that discovery
+      # may have written. Mirrors build_public_db.py's filter so the
+      # public DB stays "verified political ads only" instead of leaking
+      # raw keyword hits to the dashboard (the 483-row pollution on
+      # 2026-05-20 was caused by this missing step).
+      - name: Strip non-public rows before commit
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python strip_public_db.py
+
       - name: Commit + push if anything changed
         run: |
           set -euo pipefail

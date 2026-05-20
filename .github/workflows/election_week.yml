@@ -147,6 +147,17 @@ jobs:
           python auto_review.py --bucket recent_promotions --limit 10
           python auto_review.py --bucket lower_confidence  --limit 5
 
+      # Strip unverified content_keyword + FP + numeric-handle rows
+      # the lightweight discovery sweep may have written. Mirrors
+      # build_public_db.py's filter so the dashboard stays "verified
+      # political ads only" — see strip_public_db.py for full context.
+      - name: Strip non-public rows before commit
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python strip_public_db.py
+
       - name: Commit + push if anything changed
         run: |
           set -euo pipefail
