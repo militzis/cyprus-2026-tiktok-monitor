@@ -141,7 +141,16 @@ def _build_row(item: dict, classification: dict, advertiser_id: str) -> dict:
     reach_raw = (ad_obj.get('reach') or {}).get('unique_users_seen') or ''
     lb, ub    = t.parse_reach(reach_raw)
     ad_id     = str(ad_obj.get('id') or '')
-    disclosed = resolve_disclosed_name(av_obj, fallback=str(advertiser_id))
+    # CRITICAL: fallback is the EXISTING readable handle (e.g.,
+    # 'theodosisavgousti'), NOT str(advertiser_id). 2026-05-20 incident:
+    # TikTok returned numeric business_name on a re-fetch for ~15 known
+    # candidates, our fallback was the numeric advertiser_id, and the
+    # strip step then deleted 212 rows because their disclosed_name
+    # became numeric. Using the existing handle as fallback ensures the
+    # row keeps its readable name even when /ad/query/ regresses.
+    existing_handle = classification.get('existing_handle') or ''
+    fallback        = existing_handle if existing_handle and not existing_handle.isdigit() else str(advertiser_id)
+    disclosed = resolve_disclosed_name(av_obj, fallback=fallback)
     funded_by = resolve_funded_by(av_obj)
     return {
         'ad_id':                     ad_id,
@@ -187,9 +196,14 @@ def main(since: str) -> int:
         # re-tier transition); we accept any one of the political-tier
         # rows since promote.py keeps them all consistent.
         placeholders = ','.join('?' * len(POLITICAL_TIERS))
+        # advertiser_disclosed_name added 2026-05-20: used as the fallback
+        # for resolve_disclosed_name so a numeric-quirk re-fetch doesn't
+        # replace a readable handle with the numeric business_id (which
+        # the strip step would then delete).
         adv_rows = conn.execute(f"""
             SELECT advertiser_id, match_type, matched_candidate,
-                   matched_party, matched_district
+                   matched_party, matched_district,
+                   advertiser_disclosed_name AS existing_handle
             FROM tiktok_ads
             WHERE match_type IN ({placeholders})
             GROUP BY advertiser_id
@@ -202,12 +216,13 @@ def main(since: str) -> int:
               f"(since {since})", flush=True)
 
         t.get_access_token()
-        for i, (adv_id, mt, cand, party, district) in enumerate(adv_rows, 1):
+        for i, (adv_id, mt, cand, party, district, existing_handle) in enumerate(adv_rows, 1):
             classification = {
                 'match_type':        mt,
                 'matched_candidate': cand,
                 'matched_party':     party,
                 'matched_district':  district,
+                'existing_handle':   existing_handle,
             }
             try:
                 ads = t.query_ads_for_advertiser(int(adv_id), since)
