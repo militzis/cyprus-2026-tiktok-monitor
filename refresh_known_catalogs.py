@@ -54,7 +54,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -74,10 +74,18 @@ POLITICAL_TIERS = (
     'news_outlet', 'podcast', 'satirist', 'politician_non_candidate',
 )
 
-# Date floor for the ad query. The election cycle ramped up in April 2026;
-# pulling earlier than that just wastes API calls re-fetching pre-campaign
-# ads we already have.
-DEFAULT_SINCE = '2026-04-01'
+# Date floor for the ad query — rolling window. We only need to catch
+# NEW ads the existing 74 advertisers posted since the last cron tick;
+# anything older is already in the DB and re-fetching wastes pagination
+# (a candidate with 89 ads → 2 pages per request → 8s instead of 4s).
+# 60 days picks up the active campaign window without hardcoding a date
+# that would silently go stale after the election. Override with --since
+# YYYY-MM-DD if you ever need a deeper sweep (e.g. one-time backfill).
+DEFAULT_SINCE_DAYS = 60
+
+
+def default_since() -> str:
+    return (date.today() - timedelta(days=DEFAULT_SINCE_DAYS)).strftime('%Y-%m-%d')
 
 
 def _ensure_health_schema(conn: sqlite3.Connection) -> None:
@@ -254,7 +262,10 @@ def main(since: str) -> int:
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    p.add_argument('--since', default=DEFAULT_SINCE,
-                   help=f'Date floor (YYYY-MM-DD) for the ad query (default: {DEFAULT_SINCE})')
+    p.add_argument('--since', default=None,
+                   help=f'Date floor (YYYY-MM-DD) for the ad query. '
+                        f'Default: today - {DEFAULT_SINCE_DAYS} days '
+                        f'(auto-adapts so the cutoff stays a rolling '
+                        f'window — no hardcoded date to go stale).')
     args = p.parse_args()
-    sys.exit(main(args.since))
+    sys.exit(main(args.since or default_since()))
