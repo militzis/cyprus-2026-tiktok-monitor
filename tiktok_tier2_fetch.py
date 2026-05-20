@@ -47,14 +47,20 @@ import discover_tiktok_ads as t
 
 AD_DETAIL_URL = "https://open.tiktokapis.com/v2/research/adlib/ad/detail/"
 
+# TikTok updated /ad/detail/ to use dot-notation grouped fields (2026-05-20).
+# Old flat names (age, gender, country, follower_count, etc.) are now nested
+# inside ad_group.targeting_info, ad.reach, and advertiser sub-objects and
+# all returned HTTP 400 invalid_params. Updated to the current field list.
+# See: https://developers.tiktok.com/doc/commercial-content-api-get-ad-details
 FIELDS = ",".join([
-    "country", "audience_targeting", "video_interactions",
-    "creator_interactions", "interest",
-    "age", "gender",
-    "business_id", "business_name", "country_code", "paid_by",
-    "follower_count", "avatar_url", "profile_url",
-    "unique_users_seen", "unique_users_seen_by_country",
-    "number_of_users_targeted",
+    "ad.reach",
+    "advertiser.business_id",
+    "advertiser.business_name",
+    "advertiser.paid_for_by",
+    "advertiser.follower_count",
+    "advertiser.avatar_url",
+    "advertiser.profile_url",
+    "ad_group.targeting_info",
 ])
 
 NEW_COLS = [
@@ -145,7 +151,16 @@ def select_candidates(conn, since_days: int | None, limit: int | None) -> list[t
 
 
 def enrich_one(conn, ad_id: str) -> bool:
-    """Fetch detail for one ad and write to DB. Returns True on success."""
+    """Fetch detail for one ad and write to DB. Returns True on success.
+
+    Response structure (post-2026-05-20 API update):
+      data.ad.reach.unique_users_seen / unique_users_seen_by_country
+      data.ad_group.targeting_info.{age, gender, country, interest,
+                                     audience_targeting, number_of_users_targeted, ...}
+      data.advertiser.{business_id, business_name, paid_for_by, follower_count,
+                       avatar_url, profile_url}
+                       — or nested under data.advertiser.tiktok_account (handle both)
+    """
     try:
         data = t._api_post(AD_DETAIL_URL, {"fields": FIELDS}, {"ad_id": int(ad_id)})
     except t.RateLimitExceeded:
@@ -153,7 +168,24 @@ def enrich_one(conn, ad_id: str) -> bool:
     except Exception as e:
         print(f"  ✗ ad {ad_id}: {e}")
         return False
-    detail = data.get("data", {}) or {}
+
+    detail   = data.get("data", {}) or {}
+    ad_obj   = detail.get("ad", {}) or {}
+    adv_obj  = detail.get("advertiser", {}) or {}
+    grp_obj  = detail.get("ad_group", {}) or {}
+    targeting = grp_obj.get("targeting_info", {}) or {}
+    reach     = ad_obj.get("reach", {}) or {}
+
+    # follower_count / profile_url / avatar_url may live directly on advertiser
+    # or nested under advertiser.tiktok_account depending on API version.
+    tiktok_acct = adv_obj.get("tiktok_account", {}) or {}
+    follower_count = (adv_obj.get("follower_count")
+                      or tiktok_acct.get("follower_count"))
+    profile_url    = (adv_obj.get("profile_url")
+                      or tiktok_acct.get("profile_url"))
+    avatar_url     = (adv_obj.get("avatar_url")
+                      or tiktok_acct.get("avatar_url"))
+
     now = datetime.now(timezone.utc).isoformat()
     conn.execute("""
         UPDATE tiktok_ads SET
@@ -172,16 +204,16 @@ def enrich_one(conn, ad_id: str) -> bool:
         WHERE ad_id = ?
     """, (
         json.dumps(detail, ensure_ascii=False),
-        json.dumps(detail.get("age") or {}, ensure_ascii=False),
-        json.dumps(detail.get("gender") or {}, ensure_ascii=False),
-        json.dumps(detail.get("country") or [], ensure_ascii=False),
-        detail.get("interest"),
-        detail.get("audience_targeting"),
-        detail.get("follower_count"),
-        detail.get("profile_url"),
-        detail.get("avatar_url"),
-        detail.get("number_of_users_targeted"),
-        json.dumps(detail.get("unique_users_seen_by_country") or {}, ensure_ascii=False),
+        json.dumps(targeting.get("age") or {}, ensure_ascii=False),
+        json.dumps(targeting.get("gender") or {}, ensure_ascii=False),
+        json.dumps(targeting.get("country") or [], ensure_ascii=False),
+        targeting.get("interest"),
+        targeting.get("audience_targeting"),
+        follower_count,
+        profile_url,
+        avatar_url,
+        targeting.get("number_of_users_targeted"),
+        json.dumps(reach.get("unique_users_seen_by_country") or {}, ensure_ascii=False),
         now,
         ad_id,
     ))
