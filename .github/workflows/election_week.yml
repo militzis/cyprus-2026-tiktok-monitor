@@ -99,8 +99,9 @@ jobs:
             tiktok_discovered.json
             content_keyword_discovery.json
             tiktok_token_cache.json
-          key: election-week-cache-${{ github.run_id }}
+          key: election-week-cache-${{ github.ref }}-${{ github.run_id }}
           restore-keys: |
+            election-week-cache-${{ github.ref }}-
             election-week-cache-
             tiktok-discovery-cache-
 

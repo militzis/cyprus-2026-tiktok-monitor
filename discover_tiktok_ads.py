@@ -650,11 +650,11 @@ def build_search_terms(candidates_path: str) -> list[str]:
             parts = name.split()
             if parts:
                 last_latin = name_to_latin(parts[0])
-                if 4 <= len(last_latin) <= 50:
+                if 3 <= len(last_latin) <= 50:   # was 4 — catches short surnames e.g. "Loi"
                     terms.add(last_latin)
                 if len(parts) >= 2:
                     first_latin = name_to_latin(parts[-1])
-                    if 5 <= len(first_latin) <= 50:
+                    if 3 <= len(first_latin) <= 50:  # was 5 — catches short first names e.g. "Ari"
                         terms.add(first_latin)
     return sorted(terms)
 
@@ -792,7 +792,7 @@ def _record_health(run_kind: str, started_at: str, status: str,
               (run_kind, started_at, finished_at, status,
                ads_checked, changes, errors, error_msg)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.utcnow().isoformat(),
+        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
               status, ads_checked, changes, errors, error_msg))
         conn.commit()
         conn.close()
@@ -939,7 +939,7 @@ def main():
     if not os.path.exists(CANDIDATES_FILE):
         sys.exit(f"ERROR: {CANDIDATES_FILE} not found")
 
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     crash_msg  = None
     reset_api_metrics()
     try:

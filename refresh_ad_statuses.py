@@ -29,7 +29,7 @@ Usage:
   python refresh_ad_statuses.py --limit 50       # cap to first N advertisers
 """
 import os, sys, time, sqlite3, argparse, json, subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import discover_tiktok_ads as t
@@ -101,7 +101,7 @@ def record_health(conn, run_kind, started_at, status,
                   error_msg=None, since_arg=None, limit_arg=None):
     """Insert one row into pipeline_health. Always called from a top-level
     try/finally so even crashes get recorded."""
-    finished_at = datetime.utcnow().isoformat()
+    finished_at = datetime.now(timezone.utc).isoformat()
     conn.execute("""
         INSERT INTO pipeline_health
           (run_kind, started_at, finished_at, status,
@@ -120,7 +120,7 @@ def _adv_ids_to_refresh(conn, args) -> list[str]:
             "SELECT DISTINCT advertiser_id FROM tiktok_ads WHERE advertiser_id IS NOT NULL"
         ).fetchall()
     else:
-        cutoff = (datetime.utcnow() - _parse_duration(args.since)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - _parse_duration(args.since)).isoformat()
         rows = conn.execute(
             """SELECT DISTINCT advertiser_id FROM tiktok_ads
                WHERE advertiser_id IS NOT NULL
@@ -147,7 +147,7 @@ def refresh(args):
 
 
 def _refresh_impl(args):
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
@@ -296,7 +296,7 @@ def _refresh_loop(args, conn):
             n_adv_errors += 1
             continue
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         for item in items:
             ad_obj = item.get('ad', {}) or {}
             ad_id  = str(ad_obj.get('id') or '')
@@ -313,7 +313,15 @@ def _refresh_loop(args, conn):
             prev_stmt   = row.get('status_statement') or ''
             handle      = row.get('handle') or ''
 
-            TAKEDOWN_SIGNALS = ('removed', 'violation', 'deleted', 'expired')
+            # Substrings that indicate TikTok enforcement in status_statement.
+            # Kept broad so wording changes ("permanently removed", "policy
+            # violation", "terms of service") are still caught. If TikTok
+            # adds new phrasing, extend this tuple.
+            TAKEDOWN_SIGNALS = (
+                'removed', 'violation', 'deleted', 'expired',
+                'policy', 'terms', 'prohibited', 'banned', 'suspended',
+                'enforcement', 'takedown',
+            )
             prev_signal = any(s in prev_stmt.lower() for s in TAKEDOWN_SIGNALS)
             new_signal  = any(s in new_stmt.lower()  for s in TAKEDOWN_SIGNALS)
             is_real_change = (new_status != prev_status) or (new_signal != prev_signal)

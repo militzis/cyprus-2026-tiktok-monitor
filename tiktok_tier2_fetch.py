@@ -107,7 +107,7 @@ def record_health(conn, started_at, status, n_done, n_errors,
                   error_msg=None, since_arg=None, limit_arg=None):
     """Insert one row into pipeline_health. Always called from a top-level
     try/finally so even crashes get recorded."""
-    finished_at = datetime.utcnow().isoformat()
+    finished_at = datetime.now(timezone.utc).isoformat()
     conn.execute("""
         INSERT INTO pipeline_health
           (run_kind, started_at, finished_at, status,
@@ -243,7 +243,7 @@ def main():
 
 
 def _run(args):
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     conn = sqlite3.connect(DB)
     ensure_schema(conn)
 

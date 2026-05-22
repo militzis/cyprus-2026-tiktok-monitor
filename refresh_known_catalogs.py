@@ -54,7 +54,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -124,7 +124,7 @@ def _record_health(run_kind: str, started_at: str, status: str,
               (run_kind, started_at, finished_at, status,
                ads_checked, changes, errors, error_msg, since_arg)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.utcnow().isoformat(),
+        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
               status, ads_checked, changes, errors, error_msg, since_arg))
         conn.commit()
         conn.close()
@@ -183,7 +183,7 @@ def main(since: str) -> int:
     if not t.CLIENT_KEY or not t.CLIENT_SECRET:
         sys.exit("ERROR: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET missing from env")
 
-    started_at        = datetime.utcnow().isoformat()
+    started_at        = datetime.now(timezone.utc).isoformat()
     crash_msg         = None
     n_new_ads         = 0
     n_advertisers     = 0
@@ -256,7 +256,7 @@ def main(since: str) -> int:
                 _conn = sqlite3.connect(DB)
                 _conn.execute(
                     "UPDATE tiktok_ads SET last_status_check = ? WHERE advertiser_id = ?",
-                    (datetime.utcnow().isoformat(), str(adv_id)),
+                    (datetime.now(timezone.utc).isoformat(), str(adv_id)),
                 )
                 _conn.commit()
                 _conn.close()
