@@ -492,6 +492,11 @@ def query_ads_for_advertiser(business_id: int,
             body['search_id'] = search_id
         try:
             data = _api_post(ADS_URL, {'fields': fields}, body)
+        except RateLimitExceeded:
+            # Re-raise so callers (refresh_known_catalogs, discover_tiktok_ads)
+            # can break their outer loop immediately instead of retrying for
+            # every remaining advertiser (67 × 210s backoff = ~4h of waiting).
+            raise
         except Exception as e:
             print(f"    [ads] business_id={business_id} failed: {e}")
             break
