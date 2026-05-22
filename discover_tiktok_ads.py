@@ -469,9 +469,17 @@ def query_ads_for_advertiser(business_id: int,
         'advertiser.business_id', 'advertiser.business_name', 'advertiser.paid_for_by',
     ])
 
+    # Safety cap: 20 pages × 50 ads = 1000 ads max per advertiser.
+    # Guards against TikTok's pagination bug where has_more:True is returned
+    # with an empty ads list forever (observed 2026-05-22 for advertisers
+    # whose ads have all been removed — the API returns ads:[],has_more:True
+    # indefinitely instead of has_more:False). Without this cap the loop
+    # never terminates and burns the entire API rate-limit budget.
+    MAX_PAGES = 20
+
     rows: list[dict] = []
     search_id = None
-    while True:
+    for _page in range(MAX_PAGES):
         body: dict = {
             'filters': {
                 'ad_published_date_range': {'min': since, 'max': yesterday},
@@ -491,6 +499,14 @@ def query_ads_for_advertiser(business_id: int,
         ads       = payload.get('ads', [])
         rows.extend(ads)
         if not payload.get('has_more') or not payload.get('search_id'):
+            break
+        if not ads:
+            # has_more:True but empty page — TikTok pagination bug (e.g.
+            # advertiser whose ads were all removed). Stop immediately so
+            # we don't spin through MAX_PAGES of empty API calls.
+            print(f"    [ads] business_id={business_id}: empty page with "
+                  f"has_more=True — stopping (TikTok pagination quirk)",
+                  flush=True)
             break
         search_id = payload['search_id']
         time.sleep(REQUEST_DELAY)
