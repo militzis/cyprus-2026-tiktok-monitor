@@ -522,6 +522,82 @@ def query_ads_for_advertiser(business_id: int,
     return rows
 
 
+def query_ads_batch(business_ids: list[int], since_date: str,
+                    chunk_size: int = 50) -> list[dict]:
+    """Fetch CY ads for MULTIPLE advertisers in a single paginated batch query.
+
+    Replaces N individual query_ads_for_advertiser() calls with ~2-20 paginated
+    calls (50 ads/page, up to chunk_size advertiser IDs per request).
+
+    Why chunk_size=50: TikTok's API docs don't publish the max array length for
+    advertiser_business_ids. 50 is a safe conservative limit; raise it if TikTok
+    confirms a higher cap. With 67 advertisers and chunk_size=50 we make 2 batch
+    requests instead of 67 individual ones.
+
+    Returns: flat list of raw /ad/query/ items, same format as
+    query_ads_for_advertiser(). Each item carries advertiser.business_id so the
+    caller can map results back to the right classification.
+    """
+    yesterday = (date.today() - timedelta(days=1)).strftime('%Y%m%d')
+    since     = date.fromisoformat(since_date).strftime('%Y%m%d')
+
+    fields = ','.join([
+        'ad.id', 'ad.first_shown_date', 'ad.last_shown_date',
+        'ad.status', 'ad.status_statement',
+        'ad.videos', 'ad.image_urls', 'ad.reach',
+        'advertiser.business_id', 'advertiser.business_name', 'advertiser.paid_for_by',
+    ])
+
+    all_rows: list[dict] = []
+    chunks = [business_ids[i:i + chunk_size]
+              for i in range(0, len(business_ids), chunk_size)]
+
+    for chunk_idx, chunk in enumerate(chunks, 1):
+        print(f"    [batch] chunk {chunk_idx}/{len(chunks)} "
+              f"({len(chunk)} advertisers)", flush=True)
+        MAX_PAGES = 100   # higher than per-advertiser; many ads possible in batch
+        search_id = None
+
+        for _page in range(MAX_PAGES):
+            body: dict = {
+                'filters': {
+                    'ad_published_date_range': {'min': since, 'max': yesterday},
+                    'country_code':            'CY',
+                    'advertiser_business_ids': chunk,
+                },
+                'max_count': 50,
+            }
+            if search_id:
+                body['search_id'] = search_id
+            try:
+                data = _api_post(ADS_URL, {'fields': fields}, body)
+            except RateLimitExceeded:
+                raise
+            except Exception as e:
+                print(f"    [batch] chunk {chunk_idx} page {_page+1} failed: {e}",
+                      flush=True)
+                break
+
+            payload = data.get('data', {})
+            ads     = payload.get('ads', [])
+            all_rows.extend(ads)
+
+            if not payload.get('has_more') or not payload.get('search_id'):
+                break
+            if not ads:
+                print(f"    [batch] chunk {chunk_idx}: empty page with "
+                      f"has_more=True — stopping (TikTok pagination quirk)",
+                      flush=True)
+                break
+            search_id = payload['search_id']
+            time.sleep(REQUEST_DELAY)
+
+        if chunk_idx < len(chunks):
+            time.sleep(REQUEST_DELAY)   # brief pause between chunks
+
+    return all_rows
+
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def init_db():

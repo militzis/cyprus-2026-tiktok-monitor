@@ -214,98 +214,98 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
         conn.close()
 
         n_advertisers = len(adv_rows)
-        print(f"  refreshing catalogs for {n_advertisers} known advertisers "
-              f"(since {since})", flush=True)
-        if skip_if_recent_hours:
-            print(f"  skipping advertisers checked in the last "
-                  f"{skip_if_recent_hours:.1f}h", flush=True)
+        print(f"  {n_advertisers} known advertisers (since {since})", flush=True)
 
-        # Early-abort sentinel: if the first EARLY_ABORT_THRESHOLD advertisers
-        # are all rate-limited, the API is saturated — stop immediately instead
-        # of burning through all 67 advertisers with backoff delays.
-        EARLY_ABORT_THRESHOLD = 5
-        consecutive_429s_at_start = 0
-
-        t.get_access_token()
+        # Build classification map and filter out recently-checked advertisers.
+        classification_map: dict[str, dict] = {}
+        adv_ids_to_query: list[int] = []
         now_utc = datetime.now(timezone.utc)
-        for i, (adv_id, mt, cand, party, district, existing_handle, last_check) in enumerate(adv_rows, 1):
-            # Skip recently-checked advertisers to avoid hammering the API on
-            # back-to-back election-week ticks (every 3h). The caller passes
-            # skip_if_recent_hours=2.5 so we only re-query advertisers not
-            # seen in the last 2.5h — practically a no-op if the previous
-            # tick ran successfully.
-            if skip_if_recent_hours and last_check:
-                try:
-                    age_h = (now_utc - datetime.fromisoformat(last_check.replace('Z', '+00:00'))
-                             ).total_seconds() / 3600
-                    if age_h < skip_if_recent_hours:
-                        n_skipped += 1
-                        continue
-                except Exception:
-                    pass  # malformed timestamp — proceed normally
 
-            classification = {
+        for (adv_id, mt, cand, party, district, existing_handle, last_check) in adv_rows:
+            classification_map[str(adv_id)] = {
                 'match_type':        mt,
                 'matched_candidate': cand,
                 'matched_party':     party,
                 'matched_district':  district,
                 'existing_handle':   existing_handle,
             }
-            try:
-                ads = t.query_ads_for_advertiser(int(adv_id), since)
-                consecutive_429s_at_start = 0  # reset on any success
-            except t.RateLimitExceeded:
-                if i <= EARLY_ABORT_THRESHOLD:
-                    consecutive_429s_at_start += 1
-                    if consecutive_429s_at_start >= EARLY_ABORT_THRESHOLD:
-                        print(f"  [early-abort] first {EARLY_ABORT_THRESHOLD} advertisers "
-                              f"all rate-limited — API saturated, stopping run.",
-                              flush=True)
-                        break
-                print(f"  [429] persistent — stopping at {i}/{n_advertisers}",
-                      flush=True)
-                break
-            except Exception as e:
-                print(f"  [ERR] advertiser_id={adv_id}: {type(e).__name__}: {e}",
-                      flush=True)
-                continue
+            if skip_if_recent_hours and last_check:
+                try:
+                    age_h = (now_utc - datetime.fromisoformat(
+                                 last_check.replace('Z', '+00:00'))
+                             ).total_seconds() / 3600
+                    if age_h < skip_if_recent_hours:
+                        n_skipped += 1
+                        continue
+                except Exception:
+                    pass  # malformed timestamp — query anyway
+            adv_ids_to_query.append(int(adv_id))
 
-            if not ads:
-                continue
-            new_rows = [_build_row(item, classification, adv_id) for item in ads]
-            # Count truly-new ad_ids (existing ones are still upserted to
-            # pick up any status/reach changes — that's the secondary
-            # benefit of this script).
-            for row in new_rows:
-                if row['ad_id'] and row['ad_id'] not in existing_ids:
-                    n_new_ads += 1
-                    existing_ids.add(row['ad_id'])
-            t.upsert_rows(new_rows)
-            # Stamp last_status_check so refresh_ad_statuses.py --since Xh
-            # skips these advertisers when it runs next (daily cron). Without
-            # this, both scripts query /ad/query/ for the same 74 advertisers
-            # in the same pipeline run, doubling the API load and causing 429s.
-            # Added 2026-05-20 after catalog refresh + status refresh were
-            # both switched to /ad/query/ and started exhausting the quota.
+        if not adv_ids_to_query:
+            print(f"  all {n_skipped} advertisers checked within the last "
+                  f"{skip_if_recent_hours}h — nothing to do.", flush=True)
+            return 0
+
+        print(f"  batch-querying {len(adv_ids_to_query)} advertisers "
+              f"({n_skipped} skipped as recently checked)", flush=True)
+
+        t.get_access_token()
+
+        # ── BATCH QUERY ───────────────────────────────────────────────────────
+        # Single call (paginated) for ALL advertisers instead of 67 individual
+        # calls. Reduces ~134 API requests to ~5-20 paginated pages.
+        # Falls back to per-advertiser if the batch call raises unexpectedly.
+        try:
+            all_ads = t.query_ads_batch(adv_ids_to_query, since)
+        except t.RateLimitExceeded:
+            print("  [429] rate-limited on batch query — stopping.", flush=True)
+            return 1
+
+        print(f"  batch returned {len(all_ads)} ads total", flush=True)
+
+        # Group batch results by advertiser_id (from response field).
+        by_advertiser: dict[str, list] = {}
+        for item in all_ads:
+            av_obj = item.get('advertiser', {}) or {}
+            bid    = str(av_obj.get('business_id') or '')
+            by_advertiser.setdefault(bid, []).append(item)
+
+        # Upsert each advertiser's ads and stamp last_status_check.
+        stamp_ts = datetime.now(timezone.utc).isoformat()
+        for adv_id_int in adv_ids_to_query:
+            adv_id         = str(adv_id_int)
+            classification = classification_map[adv_id]
+            items          = by_advertiser.get(adv_id, [])
+
+            if items:
+                new_rows = [_build_row(item, classification, adv_id)
+                            for item in items]
+                for row in new_rows:
+                    if row['ad_id'] and row['ad_id'] not in existing_ids:
+                        n_new_ads += 1
+                        existing_ids.add(row['ad_id'])
+                t.upsert_rows(new_rows)
+
+            # Stamp last_status_check regardless — even advertisers with no
+            # new ads in the window are "checked" and should be skipped by
+            # refresh_ad_statuses.py --since 24h on the next run.
             try:
                 _conn = sqlite3.connect(DB)
                 try:
                     _conn.execute(
-                        "UPDATE tiktok_ads SET last_status_check = ? WHERE advertiser_id = ?",
-                        (datetime.now(timezone.utc).isoformat(), str(adv_id)),
+                        "UPDATE tiktok_ads SET last_status_check = ?"
+                        " WHERE advertiser_id = ?",
+                        (stamp_ts, adv_id),
                     )
                     _conn.commit()
                 finally:
                     _conn.close()
             except Exception as _e:
-                print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}", flush=True)
+                print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}",
+                      flush=True)
 
-            if i % 10 == 0:
-                print(f"  ... {i}/{n_advertisers} processed "
-                      f"(new ads so far: {n_new_ads})", flush=True)
-
-        print(f"\n  ✓ refreshed {n_advertisers} catalogs "
-              f"({n_skipped} skipped as recent), {n_new_ads} new ads",
+        print(f"\n  ✓ batch-refreshed {len(adv_ids_to_query)} advertisers "
+              f"({n_skipped} skipped), {n_new_ads} new ads",
               flush=True)
         return 0
 
