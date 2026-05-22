@@ -17,7 +17,8 @@ What gets dropped (matches build_public_db.py exactly):
   - advertiser_disclosed_name GLOB '[0-9]*'  (funder-ID quirk)
 
 What gets NULL'd (size-only, columns unused by the dashboard):
-  - targeting_json, reach_by_country, avatar_url
+  - targeting_json, avatar_url
+  (reach_by_country is KEPT — dashboard uses it for per-country breakdowns)
 
 Idempotent. Best-effort: any error is logged but never raises, so a
 cleanup failure cannot block the workflow's commit + push step.
@@ -40,7 +41,7 @@ DB = os.environ.get('POLITICIAN_ADS_DB',
 DROP_MATCH_LIKE          = ['content_keyword', 'content_keyword%',
                             'likely_false_positive%']
 DROP_NUMERIC_HANDLE_GLOB = '[0-9]*'
-COLUMNS_TO_NULL          = ['targeting_json', 'reach_by_country', 'avatar_url']
+COLUMNS_TO_NULL          = ['targeting_json', 'avatar_url']
 
 
 def main() -> int:
