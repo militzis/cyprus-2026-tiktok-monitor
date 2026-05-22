@@ -66,11 +66,15 @@ ADV_URL    = f"{API_BASE}/v2/research/adlib/advertiser/query/"
 ADS_URL    = f"{API_BASE}/v2/research/adlib/ad/query/"
 
 REQUEST_DELAY    = 2.0   # seconds between API calls (was 1.0)
-COOLDOWN_429     = 600   # seconds to sleep after a burst of 429s
+COOLDOWN_429     = 120   # seconds to sleep after a burst of 429s (was 600 — TikTok
+                         # confirmed NO daily quota, so 429s are per-minute throttling
+                         # only; 2 min is enough for the window to reset)
 COOLDOWN_TRIGGER = 3     # consecutive 429s to trigger a cooldown
 MAX_COOLDOWNS    = 3     # after this many cooldowns w/o forward progress, bail out
-BACKOFF_BASE_429 = 30    # initial 429 wait — bumped from 5s (TikTok's window is ~60s)
-BACKOFF_MAX_429  = 240   # cap on per-call exponential backoff
+BACKOFF_BASE_429 = 15    # initial 429 wait (was 30s — shorter since no quota to burn)
+BACKOFF_MAX_429  = 60    # cap on per-call exponential backoff (was 240s — TikTok rep
+                         # confirmed no quota, so 429 = rate-limit window, not quota
+                         # exhaustion; 60s is enough for the window to clear)
 
 # ── API metrics (process-local, reset per run) ───────────────────────────────
 # Before we instrumented _api_post we were tuning --limit / timeouts blind:
