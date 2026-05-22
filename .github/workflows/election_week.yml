@@ -119,7 +119,13 @@ jobs:
           POLITICIAN_ADS_DB:    politician_ads_public.db
         run: |
           set -euo pipefail
-          python refresh_known_catalogs.py
+          # --skip-if-recent-hours 2.5: skip advertisers already checked in
+          # the previous 3h tick. Prevents every tick from re-querying all 67
+          # advertisers even when nothing changed, which was the root cause of
+          # 100% rate-limit storms (134 calls all returning 429 on the 12:07
+          # election-week run on 2026-05-22). A 2.5h cutoff gives a 30min
+          # margin below the 3h tick interval.
+          python refresh_known_catalogs.py --skip-if-recent-hours 2.5
 
       - name: Enrich newly-discovered ads
         env:

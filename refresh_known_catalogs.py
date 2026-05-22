@@ -179,7 +179,7 @@ def _build_row(item: dict, classification: dict, advertiser_id: str) -> dict:
     }
 
 
-def main(since: str) -> int:
+def main(since: str, skip_if_recent_hours: float | None = None) -> int:
     if not t.CLIENT_KEY or not t.CLIENT_SECRET:
         sys.exit("ERROR: TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET missing from env")
 
@@ -187,6 +187,7 @@ def main(since: str) -> int:
     crash_msg         = None
     n_new_ads         = 0
     n_advertisers     = 0
+    n_skipped         = 0
     t.reset_api_metrics()
 
     try:
@@ -203,7 +204,8 @@ def main(since: str) -> int:
         adv_rows = conn.execute(f"""
             SELECT advertiser_id, match_type, matched_candidate,
                    matched_party, matched_district,
-                   advertiser_disclosed_name AS existing_handle
+                   advertiser_disclosed_name AS existing_handle,
+                   MAX(last_status_check) AS last_check
             FROM tiktok_ads
             WHERE match_type IN ({placeholders})
             GROUP BY advertiser_id
@@ -214,9 +216,34 @@ def main(since: str) -> int:
         n_advertisers = len(adv_rows)
         print(f"  refreshing catalogs for {n_advertisers} known advertisers "
               f"(since {since})", flush=True)
+        if skip_if_recent_hours:
+            print(f"  skipping advertisers checked in the last "
+                  f"{skip_if_recent_hours:.1f}h", flush=True)
+
+        # Early-abort sentinel: if the first EARLY_ABORT_THRESHOLD advertisers
+        # are all rate-limited, the API is saturated — stop immediately instead
+        # of burning through all 67 advertisers with backoff delays.
+        EARLY_ABORT_THRESHOLD = 5
+        consecutive_429s_at_start = 0
 
         t.get_access_token()
-        for i, (adv_id, mt, cand, party, district, existing_handle) in enumerate(adv_rows, 1):
+        now_utc = datetime.now(timezone.utc)
+        for i, (adv_id, mt, cand, party, district, existing_handle, last_check) in enumerate(adv_rows, 1):
+            # Skip recently-checked advertisers to avoid hammering the API on
+            # back-to-back election-week ticks (every 3h). The caller passes
+            # skip_if_recent_hours=2.5 so we only re-query advertisers not
+            # seen in the last 2.5h — practically a no-op if the previous
+            # tick ran successfully.
+            if skip_if_recent_hours and last_check:
+                try:
+                    age_h = (now_utc - datetime.fromisoformat(last_check.replace('Z', '+00:00'))
+                             ).total_seconds() / 3600
+                    if age_h < skip_if_recent_hours:
+                        n_skipped += 1
+                        continue
+                except Exception:
+                    pass  # malformed timestamp — proceed normally
+
             classification = {
                 'match_type':        mt,
                 'matched_candidate': cand,
@@ -226,7 +253,15 @@ def main(since: str) -> int:
             }
             try:
                 ads = t.query_ads_for_advertiser(int(adv_id), since)
+                consecutive_429s_at_start = 0  # reset on any success
             except t.RateLimitExceeded:
+                if i <= EARLY_ABORT_THRESHOLD:
+                    consecutive_429s_at_start += 1
+                    if consecutive_429s_at_start >= EARLY_ABORT_THRESHOLD:
+                        print(f"  [early-abort] first {EARLY_ABORT_THRESHOLD} advertisers "
+                              f"all rate-limited — API saturated, stopping run.",
+                              flush=True)
+                        break
                 print(f"  [429] persistent — stopping at {i}/{n_advertisers}",
                       flush=True)
                 break
@@ -269,7 +304,8 @@ def main(since: str) -> int:
                 print(f"  ... {i}/{n_advertisers} processed "
                       f"(new ads so far: {n_new_ads})", flush=True)
 
-        print(f"\n  ✓ refreshed {n_advertisers} catalogs, {n_new_ads} new ads",
+        print(f"\n  ✓ refreshed {n_advertisers} catalogs "
+              f"({n_skipped} skipped as recent), {n_new_ads} new ads",
               flush=True)
         return 0
 
@@ -300,5 +336,12 @@ if __name__ == '__main__':
                         f'Default: today - {DEFAULT_SINCE_DAYS} days '
                         f'(auto-adapts so the cutoff stays a rolling '
                         f'window — no hardcoded date to go stale).')
+    p.add_argument('--skip-if-recent-hours', type=float, default=None,
+                   metavar='N',
+                   help='Skip advertisers whose last_status_check is less than '
+                        'N hours ago. Use in election-week (every 3h tick) to '
+                        'avoid re-querying advertisers checked in the previous '
+                        'tick. Recommended: 2.5 (covers 3h interval with margin).')
     args = p.parse_args()
-    sys.exit(main(args.since or default_since()))
+    sys.exit(main(args.since or default_since(),
+                  skip_if_recent_hours=args.skip_if_recent_hours))
