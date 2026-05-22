@@ -12,7 +12,7 @@ Usage:
   python status_change_report.py --output reports/today.md
 """
 import os, sys, sqlite3, argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict, Counter
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 
@@ -37,7 +37,7 @@ def parse_since(s: str) -> str:
         unit = s[-1].lower()
         delta = {'h': timedelta(hours=n), 'd': timedelta(days=n),
                  'm': timedelta(minutes=n)}[unit]
-        return (datetime.utcnow() - delta).isoformat()
+        return (datetime.now(timezone.utc) - delta).isoformat()
     # Assume YYYY-MM-DD
     return datetime.fromisoformat(s).isoformat()
 
