@@ -175,6 +175,11 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "auto: daily ad-status refresh $(date -u +%Y-%m-%d)"
+            # Rebase before push: _checkpoint_push() inside refresh_ad_statuses.py
+            # may have committed mid-run, or an election-week tick queued behind
+            # us could have pushed while this job ran. Without the rebase the push
+            # fails with "non-fast-forward" and the reports are lost.
+            git pull --rebase origin main
             git push
           fi
 

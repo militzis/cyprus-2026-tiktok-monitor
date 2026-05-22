@@ -173,6 +173,7 @@ jobs:
             echo "No new advertisers / ads to commit."
           else
             git commit -m "auto: weekly discovery sweep $(date -u +%Y-%m-%d)"
+            git pull --rebase origin main
             git push
           fi
 

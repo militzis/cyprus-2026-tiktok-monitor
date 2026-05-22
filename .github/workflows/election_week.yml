@@ -178,6 +178,9 @@ jobs:
             echo "No changes this run."
           else
             git commit -m "auto: election-week monitor $(date -u +%Y-%m-%dT%H:%MZ)"
+            # Rebase before push in case an adjacent tick or _checkpoint_push()
+            # already advanced origin/main since this job started.
+            git pull --rebase origin main
             git push
           fi
 
