@@ -12,7 +12,7 @@
 """
 import sys, os, time, json, sqlite3, importlib
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding='utf-8')
 import discover_tiktok_ads as t
@@ -165,7 +165,7 @@ def _record_health(run_kind: str, started_at: str, status: str,
               (run_kind, started_at, finished_at, status,
                ads_checked, changes, errors, error_msg)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.utcnow().isoformat(),
+        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
               status, ads_checked, changes, errors, error_msg))
         conn.commit()
         conn.close()
@@ -215,7 +215,7 @@ def search_ads_by_keyword(keyword: str, max_pages: int = 5) -> list[dict]:
 
 
 def main() -> None:
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     crash_msg  = None
     n_new_advertisers = 0
     saved_total       = 0

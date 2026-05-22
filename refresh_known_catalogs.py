@@ -254,12 +254,14 @@ def main(since: str) -> int:
             # both switched to /ad/query/ and started exhausting the quota.
             try:
                 _conn = sqlite3.connect(DB)
-                _conn.execute(
-                    "UPDATE tiktok_ads SET last_status_check = ? WHERE advertiser_id = ?",
-                    (datetime.now(timezone.utc).isoformat(), str(adv_id)),
-                )
-                _conn.commit()
-                _conn.close()
+                try:
+                    _conn.execute(
+                        "UPDATE tiktok_ads SET last_status_check = ? WHERE advertiser_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), str(adv_id)),
+                    )
+                    _conn.commit()
+                finally:
+                    _conn.close()
             except Exception as _e:
                 print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}", flush=True)
 

@@ -27,7 +27,7 @@ Schema additions:
   Adds column `canonical_post_url` to tiktok_ads if missing.
 """
 import os, sys, sqlite3, asyncio, argparse, re, json, time
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 from playwright.async_api import async_playwright
@@ -185,7 +185,7 @@ async def main(args):
             matches = match_ads_to_posts(ads, posts)
             print(f"    matched {len(matches)} / {len(ads)} ads")
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             for ad_id, url, post_id, days in matches:
                 conn.execute("""UPDATE tiktok_ads
                                 SET canonical_post_url=?,

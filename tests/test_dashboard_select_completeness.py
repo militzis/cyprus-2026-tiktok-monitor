@@ -170,7 +170,8 @@ def assert_db_has_columns(cols: set[str]) -> None:
 
 
 def test_dashboard_select_includes_every_referenced_column():
-    src = open(APP_FILE, encoding='utf-8').read()
+    with open(APP_FILE, encoding='utf-8') as fh:
+        src = fh.read()
     selected = extract_select_columns(src)
     referenced = extract_referenced_columns(src)
     missing = referenced - selected - DERIVED_COLUMNS
@@ -189,7 +190,8 @@ def test_dashboard_select_includes_every_referenced_column():
 
 
 def test_public_db_has_every_selected_column():
-    src = open(APP_FILE, encoding='utf-8').read()
+    with open(APP_FILE, encoding='utf-8') as fh:
+        src = fh.read()
     selected = extract_select_columns(src)
     assert_db_has_columns(selected)
 
