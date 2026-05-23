@@ -343,8 +343,8 @@ def _last_refresh_age_hours() -> float | None:
         conn.close()
         if not row or not row[0]:
             return None
-        return (pd.Timestamp.now(tz='UTC').tz_convert(None) -
-                pd.to_datetime(row[0])).total_seconds() / 3600
+        return (pd.Timestamp.now(tz='UTC') -
+                pd.to_datetime(row[0], utc=True)).total_seconds() / 3600
     except Exception:
         return None
 
@@ -366,8 +366,8 @@ if _h is None:
         )
 else:
     _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
-    _fin_ts = pd.to_datetime(_fin)
-    _age_h  = (pd.Timestamp.now(tz='UTC').tz_convert(None) - _fin_ts).total_seconds() / 3600
+    _fin_ts = pd.to_datetime(_fin, utc=True)
+    _age_h  = (pd.Timestamp.now(tz='UTC') - _fin_ts).total_seconds() / 3600
     _degraded = (_stat == 'failed') or (_age_h > 25)
     if _degraded:
         # Public-facing notice — plain language, no jargon, sits ABOVE
