@@ -283,7 +283,7 @@ def main() -> None:
     handles = [args.handle] if args.handle else select_handles(conn, args.bucket, args.limit)
     if not handles:
         print("  No candidates to review.")
-        sys.exit(1)
+        sys.exit(0)
     print(f"  Reviewing {len(handles)} handle(s) with Claude Haiku…\n")
 
     for i, h in enumerate(handles, 1):
