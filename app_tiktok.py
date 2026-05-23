@@ -236,9 +236,15 @@ _days_to_election = (ELECTION_DAY - _now_utc).days
 if _in_silence:
     POLITICAL_TIERS_SET = {'manual_resume', 'party_coordinator',
                            'political_movement', 'party_supporter', 'party_account'}
+    # Only count ads whose last_shown falls within or after the 7 days before
+    # the silence window opened — this excludes stale 'active' records from
+    # months ago that TikTok has simply stopped returning (meaning they stopped
+    # running) but that we never received an explicit 'inactive' update for.
+    _recency_cutoff = (SILENCE_START_UTC - pd.Timedelta(days=7)).date().isoformat()
     _live_during_silence = df[
         df['match_type'].isin(POLITICAL_TIERS_SET)
         & df['ad_status'].fillna('').str.lower().eq('active')
+        & (df['last_shown'].fillna('') >= _recency_cutoff)
     ]
     if len(_live_during_silence) > 0:
         _spend_alive = 0
@@ -246,18 +252,18 @@ if _in_silence:
             _spend_alive = int(_live_during_silence['estimated_spend_eur_mid'].fillna(0).sum())
         st.error(
             f"🚨 **TIKTOK ToS VIOLATION** — "
-            f"{len(_live_during_silence)} political ads are still **ACTIVE on TikTok** "
+            f"**{len(_live_during_silence)} political ads** confirmed active on TikTok "
             f"during the Cyprus pre-election period "
             f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}). "
             f"TikTok's global policy prohibits paid political advertising. "
-            f"Estimated live spend: **€{_spend_alive:,}**. "
+            f"Estimated spend: **€{_spend_alive:,}**. "
             f"See the 🚨 Enforcement tab for the full list and a bulk-report-ready CSV."
         )
     else:
         st.success(
             f"✅ Pre-election period "
             f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}) "
-            f"— zero political ads currently active. TikTok ToS being respected."
+            f"— zero political ads recently active. TikTok ToS being respected."
         )
 elif 0 <= _days_to_election <= 7:
     st.info(
