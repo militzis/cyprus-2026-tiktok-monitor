@@ -217,12 +217,13 @@ st.title("🎯 TikTok Political Ads — Cyprus 2026")
 st.caption(f"Last DB write: {df['checked_at'].max() if 'checked_at' in df.columns else '?'}")
 
 
-# ── Election-silence-window violation banner ────────────────────────────────
-# Lights up if we're inside the legal pre-election blackout AND there are
-# still political ads running. This is one of the strongest single
-# accountability signals the dashboard surfaces — TikTok runs banned
-# political content all the time, but running them during the legal
-# silence window is a separate, sharper violation visible to regulators.
+# ── Pre-election TikTok ToS violation banner ────────────────────────────────
+# Lights up if we're inside the pre-election period AND there are still
+# political ads running. TikTok's global Terms of Service ban paid political
+# advertising outright — so any active political ad is a ToS violation.
+# NOTE: "election silence" in Cyprus law refers only to the ban on publishing
+# opinion polls; it does NOT prohibit political advertising. The violation
+# flagged here is TikTok's own platform policy, not a legal silence rule.
 # Dates hardcoded for Cyprus 2026 parliamentary election; adjust each cycle.
 from datetime import timezone as _tz, datetime as _dt
 SILENCE_START_UTC = _dt(2026, 5, 22, 15, 0, tzinfo=_tz.utc)   # Fri 18:00 Cyprus
@@ -244,19 +245,19 @@ if _in_silence:
         if 'estimated_spend_eur_mid' in _live_during_silence.columns:
             _spend_alive = int(_live_during_silence['estimated_spend_eur_mid'].fillna(0).sum())
         st.error(
-            f"🚨 **ELECTION-SILENCE VIOLATION** — we are inside the "
-            f"Cyprus pre-election blackout window "
-            f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}) "
-            f"and **{len(_live_during_silence)} political ads are still ACTIVE on TikTok** "
-            f"(estimated €{_spend_alive:,} of political spend live during blackout). "
-            f"See the 🚨 Enforcement tab for the full list and a "
-            f"bulk-report-ready CSV."
+            f"🚨 **TIKTOK ToS VIOLATION** — "
+            f"{len(_live_during_silence)} political ads are still **ACTIVE on TikTok** "
+            f"during the Cyprus pre-election period "
+            f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}). "
+            f"TikTok's global policy prohibits paid political advertising. "
+            f"Estimated live spend: **€{_spend_alive:,}**. "
+            f"See the 🚨 Enforcement tab for the full list and a bulk-report-ready CSV."
         )
     else:
         st.success(
-            f"✅ Inside the election-silence window "
+            f"✅ Pre-election period "
             f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}) "
-            f"— zero political ads currently active. TikTok / advertisers complying."
+            f"— zero political ads currently active. TikTok ToS being respected."
         )
 elif 0 <= _days_to_election <= 7:
     st.info(
@@ -859,7 +860,7 @@ with tab_spend:
             st.line_chart(weekly.set_index('week')['€ mid spend'], height=280)
             st.caption("Each point = sum of mid-CPM estimates for ads first shown in that week. "
                        "Useful for spotting spend surges around debates, scandals, "
-                       "or the election-silence window.")
+                       "or the pre-election period.")
 
 # ── By party ──────────────────────────────────────────────────────────────────
 with tab_party:
