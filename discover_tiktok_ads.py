@@ -310,8 +310,17 @@ def get_access_token(force_refresh: bool = False) -> str:
 # ── API calls ─────────────────────────────────────────────────────────────────
 
 class RateLimitExceeded(Exception):
-    """Raised when persistent 429s indicate quota is exhausted —
-    caller should pause or back off, not just retry harder.
+    """Raised when persistent 429s indicate the per-minute throttle is
+    sustained — caller should pause or back off, not just retry harder.
+    """
+
+class DailyQuotaExceeded(Exception):
+    """Raised when TikTok returns daily_quota_limit_exceeded.
+
+    NOTE: A TikTok rep told us (2026-05-22) there is "no daily quota on
+    the CCL". Diagnostics on 2026-05-23 proved otherwise — the error code
+    is unmistakable. The quota resets at 00:00 UTC. Do NOT retry within
+    the same UTC day; every retry just burns a call against the quota.
     """
 
 
@@ -326,10 +335,22 @@ def _parse_retry_after(header_val: str | None) -> float | None:
         return None
 
 
+def _is_daily_quota_response(r: requests.Response) -> bool:
+    """True when TikTok signals a daily quota exhaustion (not per-minute throttle).
+    These are unrecoverable until 00:00 UTC — do NOT sleep-and-retry."""
+    try:
+        code = (r.json().get('error') or {}).get('code', '')
+        return code == 'daily_quota_limit_exceeded'
+    except Exception:
+        return False
+
+
 def _is_rate_limit_response(r: requests.Response) -> bool:
-    """429, or 200/4xx with a TikTok error body whose code is rate_limit_exceeded
-    (defensive — some APIs return non-429 status with rate-limit error codes)."""
+    """429, or 200/4xx with a TikTok error body whose code is rate_limit_exceeded.
+    Does NOT include daily_quota_limit_exceeded — that is handled separately."""
     if r.status_code == 429:
+        if _is_daily_quota_response(r):
+            return False   # let daily quota check handle it
         return True
     try:
         body = r.json()
@@ -343,7 +364,8 @@ def _api_post(url: str, params: dict, body: dict,
               max_retries: int = 3) -> dict:
     """Token refreshes only on 401. 429s honor Retry-After when present,
     fall back to exponential backoff with jitter otherwise. Persistent 429s
-    raise RateLimitExceeded so callers can implement circuit-breaking.
+    raise RateLimitExceeded; daily quota exhaustion raises DailyQuotaExceeded
+    immediately without retrying (retrying wastes the remaining quota budget).
     """
     backoff      = BACKOFF_BASE_429
     need_refresh = False
@@ -371,6 +393,13 @@ def _api_post(url: str, params: dict, body: dict,
         if r.status_code == 401 and attempt < max_retries - 1:
             need_refresh = True
             continue
+
+        # Daily quota exceeded — bail immediately, never retry.
+        if _is_daily_quota_response(r):
+            _api_metrics['rate_limited'] += 1
+            print(f"    [429] daily_quota_limit_exceeded — quota resets at 00:00 UTC. "
+                  f"Stopping immediately (retrying would waste quota).", flush=True)
+            raise DailyQuotaExceeded(f"daily quota exceeded at {url}")
 
         if _is_rate_limit_response(r):
             _api_metrics['rate_limited'] += 1

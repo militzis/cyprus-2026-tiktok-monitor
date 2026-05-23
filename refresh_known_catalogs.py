@@ -257,6 +257,10 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
         # Falls back to per-advertiser if the batch call raises unexpectedly.
         try:
             all_ads = t.query_ads_batch(adv_ids_to_query, since)
+        except t.DailyQuotaExceeded:
+            print("  [429] daily_quota_limit_exceeded — quota resets at 00:00 UTC. "
+                  "No point retrying today.", flush=True)
+            return 0   # exit 0: not our fault, nothing to fix, don't alarm GH Actions
         except t.RateLimitExceeded:
             print("  [429] rate-limited on batch query — stopping.", flush=True)
             return 1
