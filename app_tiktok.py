@@ -251,9 +251,9 @@ if _in_silence:
         if 'estimated_spend_eur_mid' in _live_during_silence.columns:
             _spend_alive = int(_live_during_silence['estimated_spend_eur_mid'].fillna(0).sum())
         st.error(
-            f"🚨 **TIKTOK ToS VIOLATION** — "
+            f"🚨 **Illegal Election-related content** — "
             f"**{len(_live_during_silence)} political ads** confirmed active on TikTok "
-            f"during the Cyprus pre-election period "
+            f"during the Cyprus pre-election blackout period "
             f"({SILENCE_START_UTC:%Y-%m-%d %H:%MZ} → {SILENCE_END_UTC:%Y-%m-%d %H:%MZ}). "
             f"TikTok's global policy prohibits paid political advertising. "
             f"Estimated spend: **€{_spend_alive:,}**. "
