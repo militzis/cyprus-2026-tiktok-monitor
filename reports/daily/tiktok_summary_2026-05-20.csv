@@ -1,0 +1,14 @@
+﻿== Window ==
+cutoff_utc,2026-05-19T10:10:01
+generated_utc,2026-05-20T10:10:02
+total_changes,45
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,45,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+
+== TikTok removals - by party ==
+party,removed_count
