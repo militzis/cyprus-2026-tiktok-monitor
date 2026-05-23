@@ -77,17 +77,20 @@ jobs:
       # daily_status_refresh.yml. Re-add this step only if /ad/query/ quota
       # increases or the catalog step is removed.
 
-      # Light discovery — only the content-keyword sweep, not the full
-      # advertiser-by-advertiser one (which takes 30+ min). Catches new
-      # advertisers within 3h of them registering.
-      - name: Lightweight discovery sweep
-        env:
-          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
-          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
-          POLITICIAN_ADS_DB:    politician_ads_public.db
-        run: |
-          set -euo pipefail
-          python discover_content_keywords.py
+      # Light discovery — DISABLED for election day (2026-05-24).
+      # discover_content_keywords.py makes N calls to /advertiser/query/
+      # (one per keyword: ΑΚΕΛ, ΔΗΣΥ, …), exhausting the rate-limit window
+      # before refresh_known_catalogs.py even starts. Since the election is
+      # tomorrow we don't need to discover new advertisers — just track the
+      # known ones. Re-enable after election day.
+      # - name: Lightweight discovery sweep
+      #   env:
+      #     TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
+      #     TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+      #     POLITICIAN_ADS_DB:    politician_ads_public.db
+      #   run: |
+      #     set -euo pipefail
+      #     python discover_content_keywords.py
 
       # Restore + save discovery cache so we don't re-sweep keywords
       # every 3h.
@@ -222,12 +225,18 @@ jobs:
               "'manual_resume','party_coordinator','political_movement',"
               "'party_supporter','party_account'"
           )
+          # Only count ads last confirmed active within 7 days of the
+          # silence window — excludes stale 'active' records from months
+          # ago that TikTok stopped returning (= stopped running) but
+          # never sent an explicit inactive update for.
+          RECENCY_CUTOFF = "2026-05-15"
           rows = conn.execute(f"""
               SELECT advertiser_disclosed_name, ad_id, matched_candidate,
                      matched_party, ad_url
               FROM tiktok_ads
               WHERE match_type IN ({POLITICAL_TIERS})
                 AND LOWER(ad_status) = 'active'
+                AND last_shown >= '{RECENCY_CUTOFF}'
               ORDER BY estimated_spend_eur_mid DESC NULLS LAST
               LIMIT 50
           """).fetchall()
