@@ -84,6 +84,16 @@ POLITICAL_TIERS = (
 # YYYY-MM-DD if you ever need a deeper sweep (e.g. one-time backfill).
 DEFAULT_SINCE_DAYS = 60
 
+# Supplementary per-advertiser pass window (days).
+# The batch API (/ad/query/ with many advertiser_ids) stops pagination
+# early when results are dense, silently missing ads from heavy advertisers
+# (observed 2026-05-25: 10 @adiafthoroi election-day ads absent from batch
+# but present in per-advertiser call). After the batch we do a second pass
+# querying each advertiser individually for the last N days — cheap because
+# most advertisers return 0-1 pages in a short window, and it guarantees
+# completeness for the most recent (and most important) ads.
+PER_ADV_RECENT_DAYS = 10
+
 
 def default_since() -> str:
     return (date.today() - timedelta(days=DEFAULT_SINCE_DAYS)).strftime('%Y-%m-%d')
@@ -147,6 +157,11 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
     n_advertisers     = 0
     n_skipped         = 0
     t.reset_api_metrics()
+
+    # Fix: upsert_rows uses discover_tiktok_ads.DB_PATH which defaults to the
+    # master DB (meta_pipeline_data/politician_ads.db). Point it at the same
+    # DB this script uses so new ads land in the right place.
+    t.DB_PATH = DB
 
     try:
         conn = sqlite3.connect(DB)
@@ -225,6 +240,13 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
 
         print(f"  batch returned {len(all_ads)} ads total", flush=True)
 
+        # Collect all ad_ids the API returned — used below for disappearance detection.
+        api_returned_ids: set[str] = {
+            str((item.get('ad', {}) or {}).get('id') or '')
+            for item in all_ads
+            if (item.get('ad', {}) or {}).get('id')
+        }
+
         # Group batch results by advertiser_id (from response field).
         by_advertiser: dict[str, list] = {}
         for item in all_ads:
@@ -266,8 +288,112 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
                 print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}",
                       flush=True)
 
+        # ── SUPPLEMENTARY PER-ADVERTISER PASS (catch batch pagination gaps) ──
+        # The batch API silently under-returns when many advertisers are queried
+        # together — it stops paginating early, missing ads from heavy
+        # advertisers (e.g. a candidate who burst 10 ads on election day).
+        # This pass queries each advertiser individually for the last
+        # PER_ADV_RECENT_DAYS days, where the gap matters most, and upserts
+        # anything the batch missed. It also corrects stale last_shown values
+        # on existing ads (batch may return an old last_shown while per-adv
+        # returns the true current value). Cost: ~1-2 API calls per advertiser.
+        _recent_since = max(
+            since,
+            (datetime.now(timezone.utc).date() -
+             timedelta(days=PER_ADV_RECENT_DAYS)).strftime('%Y-%m-%d'),
+        )
+        print(f"\n  supplementary per-adv pass (since {_recent_since}, "
+              f"{PER_ADV_RECENT_DAYS}d window)...", flush=True)
+        n_supp_new = 0
+        _supp_quota_hit = False
+        for adv_id_int in adv_ids_to_query:
+            adv_id         = str(adv_id_int)
+            classification = classification_map[adv_id]
+            try:
+                items = t.query_ads_for_advertiser(adv_id_int, _recent_since)
+            except t.DailyQuotaExceeded:
+                print("  [429] daily quota — stopping supplementary pass.",
+                      flush=True)
+                _supp_quota_hit = True
+                break
+            except t.RateLimitExceeded:
+                print("  [429] rate-limited — stopping supplementary pass.",
+                      flush=True)
+                _supp_quota_hit = True
+                break
+            if not items:
+                continue
+            _new_here   = 0
+            rows_to_upsert = []
+            for item in items:
+                ad_obj = item.get('ad', {}) or {}
+                ad_id  = str(ad_obj.get('id') or '')
+                if not ad_id:
+                    continue
+                row = _build_row(item, classification, adv_id_int)
+                rows_to_upsert.append(row)
+                # Track truly new ids for counts and disappearance detection
+                if ad_id not in existing_ids:
+                    existing_ids.add(ad_id)
+                    n_supp_new += 1
+                    _new_here  += 1
+                # Always add to api_returned_ids so disappearance detection
+                # doesn't falsely flag ads the batch missed as "disappeared".
+                api_returned_ids.add(ad_id)
+            if rows_to_upsert:
+                t.upsert_rows(rows_to_upsert)
+            if _new_here:
+                handle = classification.get('existing_handle', adv_id)
+                print(f"    @{handle}: +{_new_here} new ads", flush=True)
+
+        if not _supp_quota_hit:
+            print(f"  supplementary pass done: {n_supp_new} new ads added",
+                  flush=True)
+        n_new_ads += n_supp_new
+
+        # ── DISAPPEARANCE DETECTION (all political-tier advertisers) ─────────
+        # After the batch query we know exactly which ads the API returned.
+        # Any DB-active ad within the query window that was NOT returned →
+        # it was deactivated (advertiser stopped it or TikTok removed it).
+        # We mark it inactive so the DB doesn't accumulate stale "active"
+        # records. We can't distinguish voluntary stop from TikTok enforcement
+        # here — check the library URL manually to confirm enforcement.
+        queried_adv_ids = [str(i) for i in adv_ids_to_query]
+        n_deactivated = 0
+        if queried_adv_ids:
+            ph = ','.join('?' * len(queried_adv_ids))
+            _conn = sqlite3.connect(DB)
+            try:
+                db_active = _conn.execute(f"""
+                    SELECT ad_id, advertiser_disclosed_name, match_type
+                    FROM tiktok_ads
+                    WHERE ad_status = 'active'
+                      AND first_shown >= ?
+                      AND advertiser_id IN ({ph})
+                """, [since] + queried_adv_ids).fetchall()
+
+                for ad_id, name, mt in db_active:
+                    if ad_id not in api_returned_ids:
+                        _conn.execute("""
+                            UPDATE tiktok_ads
+                            SET ad_status        = 'inactive',
+                                status_statement = 'No longer returned by API — deactivated or removed',
+                                last_status_check = ?
+                            WHERE ad_id = ?
+                        """, (stamp_ts, ad_id))
+                        n_deactivated += 1
+                        print(f"  ⚠ disappeared [{mt}]: @{name} ad {ad_id} → inactive",
+                              flush=True)
+                if n_deactivated:
+                    _conn.commit()
+                    print(f"  → {n_deactivated} ads marked inactive "
+                          f"(disappeared from API)", flush=True)
+            finally:
+                _conn.close()
+
         print(f"\n  ✓ batch-refreshed {len(adv_ids_to_query)} advertisers "
-              f"({n_skipped} skipped), {n_new_ads} new ads",
+              f"({n_skipped} skipped), {n_new_ads} new ads, "
+              f"{n_deactivated} deactivated",
               flush=True)
         return 0
 
