@@ -483,10 +483,10 @@ def derive_status(row, today=pd.Timestamp.today()):
     if pd.isna(ls):
         return '❓ Unknown'
     days_since = (today - ls).days
-    if days_since <= 7:
-        return '✅ Active (last 7 days)'
+    if days_since <= 1:
+        return '✅ Active (today / yesterday)'
     if days_since <= 30:
-        return '🟡 Recently inactive (8–30 days)'
+        return '🟡 Recently inactive (2–30 days)'
     return '⚪ Dormant (30+ days)'
 
 df['derived_status'] = df.apply(derive_status, axis=1)
