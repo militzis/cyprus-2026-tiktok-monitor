@@ -98,10 +98,12 @@ def _import_derive_status():
         if pd.isna(ls):
             return '❓ Unknown'
         days_since = (today - ls).days
-        if days_since <= 7:
-            return '✅ Active (last 7 days)'
+        # Threshold changed 2026-05-25: Active = shown today or yesterday (≤1 day).
+        # Mirrors the logic in app_tiktok.py derive_status(). Keep in sync.
+        if days_since <= 1:
+            return '✅ Active (today / yesterday)'
         if days_since <= 30:
-            return '🟡 Recently inactive (8–30 days)'
+            return '🟡 Recently inactive (2–30 days)'
         return '⚪ Dormant (30+ days)'
     return derive_status
 
@@ -128,15 +130,24 @@ def test_derive_status_handles_nan_values():
     assert result in ('❓ Unknown', '⚪ Dormant (30+ days)')
 
 def test_derive_status_handles_empty_strings():
+    # today is fixed at 2026-05-18 in _import_derive_status; 2026-05-18 - 2026-05-17 = 1 day → Active
     derive = _import_derive_status()
-    row = {'ad_status': '', 'status_statement': '', 'last_shown': pd.Timestamp('2026-05-15')}
-    assert derive(row) == '✅ Active (last 7 days)'
+    row = {'ad_status': '', 'status_statement': '', 'last_shown': pd.Timestamp('2026-05-17')}
+    assert derive(row) == '✅ Active (today / yesterday)'
 
 def test_derive_status_active_recent():
+    # last_shown yesterday relative to the fixed today (2026-05-18)
     derive = _import_derive_status()
     row = {'ad_status': 'active', 'status_statement': 'N/A',
-           'last_shown': pd.Timestamp('2026-05-15')}
-    assert derive(row) == '✅ Active (last 7 days)'
+           'last_shown': pd.Timestamp('2026-05-18')}
+    assert derive(row) == '✅ Active (today / yesterday)'
+
+def test_derive_status_recently_inactive():
+    # last_shown 10 days ago → recently inactive (2–30 days)
+    derive = _import_derive_status()
+    row = {'ad_status': 'active', 'status_statement': 'N/A',
+           'last_shown': pd.Timestamp('2026-05-08')}
+    assert derive(row) == '🟡 Recently inactive (2–30 days)'
 
 def test_derive_status_dormant():
     derive = _import_derive_status()
@@ -230,6 +241,7 @@ if __name__ == '__main__':
         ('derive_status handles NaN values',         test_derive_status_handles_nan_values),
         ('derive_status handles empty strings',      test_derive_status_handles_empty_strings),
         ('derive_status active recent',              test_derive_status_active_recent),
+        ('derive_status recently inactive',          test_derive_status_recently_inactive),
         ('derive_status dormant',                    test_derive_status_dormant),
         ('_fmt_date normalises YYYYMMDD',            test_fmt_date_normalises_yyyymmdd),
         ('selectbox dedups duplicate-handle rows',   test_selectbox_handles_duplicate_handle_rows),

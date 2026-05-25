@@ -298,10 +298,14 @@ def load_last_health():
         ).fetchone()
         if not exists:
             return None, "table 'pipeline_health' doesn't exist yet — deploy may not have rebuilt with the latest commit"
+        # workflow_source added 2026-05-25 — probe for it so the badge works
+        # on older DBs that don't have the column yet.
+        ph_cols = {r[1] for r in conn.execute("PRAGMA table_info(pipeline_health)")}
+        source_col = "workflow_source" if "workflow_source" in ph_cols else "NULL AS workflow_source"
         row = conn.execute(
-            "SELECT run_kind, finished_at, status, ads_checked, changes, "
-            "errors, error_msg FROM pipeline_health "
-            "ORDER BY finished_at DESC LIMIT 1"
+            f"SELECT run_kind, finished_at, status, ads_checked, changes, "
+            f"errors, error_msg, {source_col} FROM pipeline_health "
+            f"ORDER BY finished_at DESC LIMIT 1"
         ).fetchone()
         conn.close()
         if row is None:
@@ -377,7 +381,7 @@ if _h is None:
             f"Most recent fresh data: **~{_fallback_age:.0f} h ago.**"
         )
 else:
-    _kind, _fin, _stat, _ads, _changes, _errs, _err_msg = _h
+    _kind, _fin, _stat, _ads, _changes, _errs, _err_msg, _workflow = _h
     _fin_ts = pd.to_datetime(_fin, utc=True)
     _age_h  = (pd.Timestamp.now(tz='UTC') - _fin_ts).total_seconds() / 3600
     _degraded = (_stat == 'failed') or (_age_h > 25)
@@ -410,10 +414,11 @@ else:
         # (refresh / discover / enrich each tucks it there via
         # print_api_summary). Surface inline so we can see throughput
         # and rate-limit % at a glance — drives sane --limit tuning.
-        api_extra = f" · {_err_msg}" if _err_msg and 'API summary' in _err_msg else ''
+        api_extra      = f" · {_err_msg}" if _err_msg and 'API summary' in _err_msg else ''
+        workflow_extra = f" [{_workflow}]" if _workflow else ''
         st.success(
             f"✅ Pipeline healthy — last {_kind} run "
-            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f}h ago), "
+            f"{_fin_ts:%Y-%m-%d %H:%M} UTC ({_age_h:.1f}h ago){workflow_extra}, "
             f"checked {_ads or 0} ads, {_changes or 0} change(s), "
             f"{_errs or 0} API error(s).{api_extra}"
         )
@@ -1022,9 +1027,9 @@ with tab_status:
     st.subheader("Ad lifecycle — active vs inactive vs removed")
     st.caption(
         "Statuses below combine TikTok's reported ad_status (refreshed by "
-        "`refresh_ad_statuses.py`) with date-derived fallbacks. Until the "
-        "status refresh has been run, ads default to ✅ Active if shown in "
-        "the last 7 days."
+        "`refresh_known_catalogs.py`) with date-derived fallbacks. Until the "
+        "status refresh has been run, ads default to ✅ Active if shown "
+        "today or yesterday."
     )
 
     # KPI row — shows all the buckets that actually have non-trivial
@@ -1038,8 +1043,8 @@ with tab_status:
         '🚨 Removed by TikTok',
         '🗑 Deleted by advertiser',
         '⌛ Expired',
-        '✅ Active (last 7 days)',
-        '🟡 Recently inactive (8–30 days)',
+        '✅ Active (today / yesterday)',
+        '🟡 Recently inactive (2–30 days)',
         '⚪ Dormant (30+ days)',
         '❓ Unknown',
     ]
@@ -1048,8 +1053,8 @@ with tab_status:
     kpi_labels_row1 = [
         '🚨 Removed by TikTok',
         '🗑 Deleted by advertiser',
-        '✅ Active (last 7 days)',
-        '🟡 Recently inactive (8–30 days)',
+        '✅ Active (today / yesterday)',
+        '🟡 Recently inactive (2–30 days)',
         '⚪ Dormant (30+ days)',
     ]
     kpi_cols = st.columns(len(kpi_labels_row1))

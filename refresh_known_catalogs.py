@@ -99,6 +99,29 @@ def default_since() -> str:
     return (date.today() - timedelta(days=DEFAULT_SINCE_DAYS)).strftime('%Y-%m-%d')
 
 
+def _ensure_status_changes_schema(conn: sqlite3.Connection) -> None:
+    """Create tiktok_ad_status_changes table if it doesn't exist.
+
+    This table was originally populated by refresh_ad_statuses.py (removed
+    2026-05-20). The disappearance-detection block in refresh_known_catalogs
+    now owns writes to this table so the dashboard's Status-change history
+    tab and the daily CSV/markdown reports have data to display.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tiktok_ad_status_changes (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            observed_at    TEXT NOT NULL,
+            ad_id          TEXT NOT NULL,
+            handle         TEXT,
+            prev_status    TEXT,
+            new_status     TEXT,
+            prev_statement TEXT,
+            new_statement  TEXT
+        )
+    """)
+    conn.commit()
+
+
 
 def _build_row(item: dict, classification: dict, advertiser_id: str) -> dict:
     """Convert a /ad/query/ result item to an upsert row, PRESERVING the
@@ -164,6 +187,14 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
     t.DB_PATH = DB
 
     try:
+        # Ensure tiktok_ad_status_changes exists — this script now owns
+        # writes to it (refresh_ad_statuses.py was removed 2026-05-20).
+        _schema_conn = sqlite3.connect(DB)
+        try:
+            _ensure_status_changes_schema(_schema_conn)
+        finally:
+            _schema_conn.close()
+
         conn = sqlite3.connect(DB)
         # One classification per advertiser_id. GROUP BY collapses cases
         # where an advertiser has multiple rows (e.g., during a partial
@@ -255,11 +286,17 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
         # those advertisers. For existing ads the ad_id lookup is authoritative;
         # for new ads we fall back to the returned business_id (and the per-adv
         # supplementary pass will catch any that still slip through).
-        _existing_ad_to_adv: dict[str, str] = {
-            r[0]: str(r[1])
-            for r in sqlite3.connect(DB).execute(
-                'SELECT ad_id, advertiser_id FROM tiktok_ads')
-        }
+        # Connection explicitly closed — the anonymous sqlite3.connect() in the
+        # old comprehension went out of scope without .close() (CPython GC handles
+        # it, but leaks the lock window on PyPy / under load).
+        _rev_conn = sqlite3.connect(DB)
+        try:
+            _existing_ad_to_adv: dict[str, str] = {
+                r[0]: str(r[1])
+                for r in _rev_conn.execute('SELECT ad_id, advertiser_id FROM tiktok_ads')
+            }
+        finally:
+            _rev_conn.close()
 
         # Group batch results by OUR advertiser_id (not the returned business_id).
         items_by_our_adv: dict[str, list] = {}
@@ -290,23 +327,28 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
                         existing_ids.add(row['ad_id'])
                 t.upsert_rows(new_rows)
 
-            # Stamp last_status_check regardless — even advertisers with no
-            # new ads in the window are "checked" and should be skipped by
-            # refresh_ad_statuses.py --since 24h on the next run.
+            # last_status_check is stamped in a single batch UPDATE after the
+            # loop (see below) — avoids 74 separate open/commit/close cycles.
+
+        # ── BATCH last_status_check STAMP ────────────────────────────────────
+        # One UPDATE for all queried advertisers instead of 74 individual
+        # open/commit/close cycles (was adding ~2s overhead per run and
+        # opened a needless write-lock window per advertiser).
+        if adv_ids_to_query:
+            _ph_stamp = ','.join('?' * len(adv_ids_to_query))
             try:
-                _conn = sqlite3.connect(DB)
+                _s_conn = sqlite3.connect(DB)
                 try:
-                    _conn.execute(
-                        "UPDATE tiktok_ads SET last_status_check = ?"
-                        " WHERE advertiser_id = ?",
-                        (stamp_ts, adv_id),
+                    _s_conn.execute(
+                        f"UPDATE tiktok_ads SET last_status_check = ?"
+                        f" WHERE advertiser_id IN ({_ph_stamp})",
+                        [stamp_ts] + [str(i) for i in adv_ids_to_query],
                     )
-                    _conn.commit()
+                    _s_conn.commit()
                 finally:
-                    _conn.close()
+                    _s_conn.close()
             except Exception as _e:
-                print(f"  ⚠ last_status_check stamp failed for {adv_id}: {_e!r}",
-                      flush=True)
+                print(f"  ⚠ last_status_check batch stamp failed: {_e!r}", flush=True)
 
         # ── SUPPLEMENTARY PER-ADVERTISER PASS (catch batch pagination gaps) ──
         # The batch API silently under-returns when many advertisers are queried
@@ -384,8 +426,11 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
             ph = ','.join('?' * len(queried_adv_ids))
             _conn = sqlite3.connect(DB)
             try:
+                # Include status_statement so we can record prev_statement in
+                # the tiktok_ad_status_changes log (previously omitted, leaving
+                # the history table empty since refresh_ad_statuses.py was removed).
                 db_active = _conn.execute(f"""
-                    SELECT ad_id, advertiser_disclosed_name, match_type
+                    SELECT ad_id, advertiser_disclosed_name, match_type, status_statement
                     FROM tiktok_ads
                     WHERE ad_status = 'active'
                       AND last_shown >= ?
@@ -400,15 +445,27 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
                 # Using first_shown >= since was wrong: it missed 90 active ads whose
                 # campaigns started before the window but were still shown recently.
 
-                for ad_id, name, mt in db_active:
+                new_stmt = 'No longer returned by API — deactivated or removed'
+                for ad_id, name, mt, prev_stmt in db_active:
                     if ad_id not in api_returned_ids:
                         _conn.execute("""
                             UPDATE tiktok_ads
                             SET ad_status        = 'inactive',
-                                status_statement = 'No longer returned by API — deactivated or removed',
+                                status_statement = ?,
                                 last_status_check = ?
                             WHERE ad_id = ?
-                        """, (stamp_ts, ad_id))
+                        """, (new_stmt, stamp_ts, ad_id))
+                        # Log the transition so the Status-change history tab and
+                        # daily CSV/markdown reports have real data to show.
+                        # refresh_ad_statuses.py was removed 2026-05-20; this block
+                        # is now the sole writer to tiktok_ad_status_changes.
+                        _conn.execute("""
+                            INSERT INTO tiktok_ad_status_changes
+                              (observed_at, ad_id, handle, prev_status,
+                               new_status, prev_statement, new_statement)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (stamp_ts, ad_id, name, 'active', 'inactive',
+                              prev_stmt, new_stmt))
                         n_deactivated += 1
                         print(f"  ⚠ disappeared [{mt}]: @{name} ad {ad_id} → inactive",
                               flush=True)

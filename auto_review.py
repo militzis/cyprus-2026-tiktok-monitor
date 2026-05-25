@@ -76,13 +76,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def fetch_handle_context(conn: sqlite3.Connection, handle: str) -> dict | None:
     """Pull everything we know about a handle into one dict, ready for prompt."""
+    # Use exact match — SQLite's LOWER() only lowercases ASCII and silently
+    # skips Greek characters, making Greek-named handles unmatchable. The
+    # callers (select_handles, --handle arg) always supply the canonical
+    # case from the DB, so exact match is correct and faster.
     rows = conn.execute("""
         SELECT advertiser_id, advertiser_disclosed_name, match_type,
                matched_candidate, matched_party, matched_district,
                ad_id, first_shown, last_shown, ad_status, status_statement,
                reach_raw, transcript, ad_url, ad_funded_by
         FROM tiktok_ads
-        WHERE LOWER(advertiser_disclosed_name) = LOWER(?)
+        WHERE advertiser_disclosed_name = ?
         ORDER BY first_shown DESC
     """, (handle,)).fetchall()
     if not rows:
@@ -202,7 +206,7 @@ def save_verdict(conn: sqlite3.Connection, handle: str,
                auto_review_confidence = ?,
                auto_review_reason     = ?,
                auto_review_at         = ?
-         WHERE LOWER(advertiser_disclosed_name) = LOWER(?)
+         WHERE advertiser_disclosed_name = ?
     """, (verdict, confidence, reason, now, handle)).rowcount
     conn.commit()
     return n

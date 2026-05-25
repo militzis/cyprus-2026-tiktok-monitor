@@ -117,9 +117,9 @@ jobs:
       # sweep explicitly skips known bids — so a candidate posting 5 new
       # ads on Wednesday is invisible until next Monday.
       - name: Refresh known advertisers' catalogs
-        continue-on-error: true   # rate-limit 429s are persistent today (election day);
-                                   # allow downstream steps (election-silence check,
-                                   # commit) to still run. Remove after election.
+        # continue-on-error removed post-election (was added 2026-05-24 for election-day
+        # rate-limit tolerance). Failures must surface in the workflow log, not be
+        # swallowed silently — the 'No changes' commit message otherwise masks real errors.
         env:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}

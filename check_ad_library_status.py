@@ -3,7 +3,6 @@ Library page for each 'disappeared' ad and determine if it was:
 
   - enforcement:  "removed from TikTok due to a violation of TikTok's terms"
   - voluntary:    "Campaign ended — advertiser stopped voluntarily"
-  - active:       ad is still showing as active on the library
   - unknown:      page loaded but couldn't determine status
 
 Updates the DB status_statement in-place. Idempotent — skips ads already
@@ -17,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 import time
@@ -24,11 +24,22 @@ from datetime import datetime, timezone
 
 sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
 
-DB = r'C:\Users\milit\dev\cyprus-2026-tiktok-monitor\politician_ads_public.db'
+# Honour POLITICIAN_ADS_DB so CI (which only has the public DB) uses the right
+# file. Without this the script opens a fresh empty SQLite at a hardcoded
+# Windows path that doesn't exist on Ubuntu runners, finds 0 rows, and exits
+# silently — making the CI step a no-op (bug discovered 2026-05-25).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pipeline_health as _ph
+from db_lock import db_lock
 
-VIOLATION_TEXT  = 'violation of tiktok'       # substring match, case-insensitive
-REMOVED_TEXT    = 'removed from tiktok'
-INACTIVE_TEXT   = 'this ad is no longer'
+DB = os.environ.get(
+    'POLITICIAN_ADS_DB',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'politician_ads_public.db'),
+)
+
+VIOLATION_TEXT   = 'violation of tiktok'       # substring match, case-insensitive
+REMOVED_TEXT     = 'removed from tiktok'
+INACTIVE_TEXT    = 'this ad is no longer'
 
 ENFORCEMENT_STMT = "Removed from TikTok due to a violation of TikTok's terms"
 VOLUNTARY_STMT   = "Campaign ended — advertiser stopped voluntarily"
@@ -51,18 +62,25 @@ def classify_page(content: str) -> str:
         return 'enforcement'
     # Page rendered without violation message → campaign ended voluntarily
     # (includes budget exhausted, advertiser paused, or natural campaign end)
-    if len(content) > 5000:   # page actually loaded (not empty/error)
+    if len(content) > 5000:   # page actually loaded (not empty/error/CAPTCHA)
         return 'voluntary'
     return 'unknown'
 
 
-def check_ads(ad_ids: list[tuple], dry_run: bool) -> None:
+def check_ads(ad_ids: list[tuple], dry_run: bool) -> tuple[int, int, int, int]:
+    """Visit each disappeared ad's library URL and classify it.
+
+    Collects all results from the headless browser first, then writes all
+    DB updates in a single db_lock session. This keeps the file lock held
+    for milliseconds (batch UPDATE) rather than minutes (entire browser session).
+
+    Returns (n_enforcement, n_voluntary, n_unknown, n_active).
+    """
     from playwright.sync_api import sync_playwright
 
-    now = datetime.now(timezone.utc).isoformat()
-    conn = sqlite3.connect(DB)
-
     n_enforcement = n_voluntary = n_unknown = n_active = 0
+    # Collect results before touching the DB — lock held only during the write.
+    results: list[tuple[str, str, str]] = []   # (ad_id, name, result)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -89,39 +107,44 @@ def check_ads(ad_ids: list[tuple], dry_run: bool) -> None:
                 result = 'unknown'
 
             print(f'→ {result}')
+            results.append((ad_id, name, result))
 
-            if not dry_run:
-                if result == 'enforcement':
-                    conn.execute(
-                        "UPDATE tiktok_ads SET status_statement=?, last_status_check=? WHERE ad_id=?",
-                        (ENFORCEMENT_STMT, now, ad_id)
-                    )
-                    conn.commit()
-                    n_enforcement += 1
-                elif result == 'voluntary':
-                    conn.execute(
-                        "UPDATE tiktok_ads SET status_statement=?, last_status_check=? WHERE ad_id=?",
-                        (VOLUNTARY_STMT, now, ad_id)
-                    )
-                    conn.commit()
-                    n_voluntary += 1
-                elif result == 'active':
-                    n_active += 1
-                else:
-                    n_unknown += 1
-            else:
-                if result == 'enforcement': n_enforcement += 1
-                elif result == 'voluntary': n_voluntary += 1
-                elif result == 'active':    n_active += 1
-                else:                       n_unknown += 1
+            if result == 'enforcement':   n_enforcement += 1
+            elif result == 'voluntary':   n_voluntary   += 1
+            elif result == 'active':      n_active      += 1
+            else:                         n_unknown     += 1
 
             time.sleep(DELAY_SECONDS)
 
         browser.close()
-    conn.close()
 
-    print(f'\n  ✓ enforcement={n_enforcement}  voluntary={n_voluntary}  '
-          f'active={n_active}  unknown={n_unknown}')
+    if dry_run or not results:
+        return n_enforcement, n_voluntary, n_unknown, n_active
+
+    # Batch-write all classifications under one lock so concurrent refreshes
+    # don't race on the same ad rows. DB connection is opened INSIDE the lock
+    # to guarantee serialisation. The try/finally ensures the connection is
+    # always closed even if the UPDATE fails.
+    now = datetime.now(timezone.utc).isoformat()
+    with db_lock(DB):
+        conn = sqlite3.connect(DB)
+        try:
+            for ad_id, name, result in results:
+                if result == 'enforcement':
+                    conn.execute(
+                        "UPDATE tiktok_ads SET status_statement=?, last_status_check=? WHERE ad_id=?",
+                        (ENFORCEMENT_STMT, now, ad_id),
+                    )
+                elif result == 'voluntary':
+                    conn.execute(
+                        "UPDATE tiktok_ads SET status_statement=?, last_status_check=? WHERE ad_id=?",
+                        (VOLUNTARY_STMT, now, ad_id),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return n_enforcement, n_voluntary, n_unknown, n_active
 
 
 def main():
@@ -129,6 +152,9 @@ def main():
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--limit',   type=int, default=None)
     args = p.parse_args()
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    crash_msg  = None
 
     conn = sqlite3.connect(DB)
     rows = conn.execute("""
@@ -145,9 +171,32 @@ def main():
     print(f'  {len(rows)} ads to classify via headless browser\n')
     if not rows:
         print('  Nothing to do.')
+        if not args.dry_run:
+            _ph.record(DB, run_kind='headless_classify', started_at=started_at,
+                       status='ok', ads_checked=0, changes=0)
         return
 
-    check_ads(rows, dry_run=args.dry_run)
+    n_enforcement = n_voluntary = n_unknown = n_active = 0
+    try:
+        n_enforcement, n_voluntary, n_unknown, n_active = \
+            check_ads(rows, dry_run=args.dry_run)
+    except Exception as e:
+        crash_msg = repr(e)
+        raise
+    finally:
+        n_classified = n_enforcement + n_voluntary
+        print(f'\n  ✓ enforcement={n_enforcement}  voluntary={n_voluntary}  '
+              f'active={n_active}  unknown={n_unknown}')
+        if not args.dry_run:
+            _ph.record(
+                DB,
+                run_kind='headless_classify',
+                started_at=started_at,
+                status='failed' if crash_msg else 'ok',
+                ads_checked=len(rows),
+                changes=n_classified,
+                error_msg=crash_msg,
+            )
 
 
 if __name__ == '__main__':

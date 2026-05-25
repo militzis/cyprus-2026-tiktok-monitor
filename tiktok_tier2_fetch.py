@@ -174,7 +174,10 @@ def enrich_one(conn, ad_id: str) -> bool:
             targeting_fetched_at = ?
         WHERE ad_id = ?
     """, (
-        json.dumps(detail, ensure_ascii=False),
+        # Store only the targeting block, not the full response — the column
+        # is named targeting_json and strip_public_db NULLs it before every
+        # commit anyway, so storing 5-50KB of full response is pure waste.
+        json.dumps(targeting, ensure_ascii=False),
         json.dumps(targeting.get("age") or {}, ensure_ascii=False),
         json.dumps(targeting.get("gender") or {}, ensure_ascii=False),
         json.dumps(targeting.get("country") or [], ensure_ascii=False),
