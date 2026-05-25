@@ -247,19 +247,39 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
             if (item.get('ad', {}) or {}).get('id')
         }
 
-        # Group batch results by advertiser_id (from response field).
-        by_advertiser: dict[str, list] = {}
+        # Build reverse map: existing ad_id → our DB's advertiser_id.
+        # Needed to correctly route batch results when TikTok returns a different
+        # business_id in the response than the one we queried with (observed quirk:
+        # e.g. we query 7631588801290272785, API returns business_id 7631588817719263254).
+        # Without this, grouping by returned business_id silently skips upserts for
+        # those advertisers. For existing ads the ad_id lookup is authoritative;
+        # for new ads we fall back to the returned business_id (and the per-adv
+        # supplementary pass will catch any that still slip through).
+        _existing_ad_to_adv: dict[str, str] = {
+            r[0]: str(r[1])
+            for r in sqlite3.connect(DB).execute(
+                'SELECT ad_id, advertiser_id FROM tiktok_ads')
+        }
+
+        # Group batch results by OUR advertiser_id (not the returned business_id).
+        items_by_our_adv: dict[str, list] = {}
         for item in all_ads:
             av_obj = item.get('advertiser', {}) or {}
+            ad_obj = item.get('ad', {}) or {}
+            ad_id  = str(ad_obj.get('id') or '')
             bid    = str(av_obj.get('business_id') or '')
-            by_advertiser.setdefault(bid, []).append(item)
+            # Existing ad → authoritative DB adv_id; new ad → returned bid (best-effort)
+            our_id = _existing_ad_to_adv.get(ad_id) or (
+                bid if bid in classification_map else None)
+            if our_id:
+                items_by_our_adv.setdefault(our_id, []).append(item)
 
         # Upsert each advertiser's ads and stamp last_status_check.
         stamp_ts = datetime.now(timezone.utc).isoformat()
         for adv_id_int in adv_ids_to_query:
             adv_id         = str(adv_id_int)
             classification = classification_map[adv_id]
-            items          = by_advertiser.get(adv_id, [])
+            items          = items_by_our_adv.get(adv_id, [])
 
             if items:
                 new_rows = [_build_row(item, classification, adv_id)
@@ -368,9 +388,17 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
                     SELECT ad_id, advertiser_disclosed_name, match_type
                     FROM tiktok_ads
                     WHERE ad_status = 'active'
-                      AND first_shown >= ?
+                      AND last_shown >= ?
                       AND advertiser_id IN ({ph})
                 """, [since] + queried_adv_ids).fetchall()
+                # NOTE: we filter by last_shown >= since, NOT first_shown >= since.
+                # Reason: the batch query covers ads published since `since`, so any
+                # ad with last_shown >= since should reappear in the API response if
+                # still running. An ad with last_shown < since is an old campaign that
+                # ended before our window — we can't detect its disappearance without
+                # a wider API query, and it's almost certainly already ended (skip it).
+                # Using first_shown >= since was wrong: it missed 90 active ads whose
+                # campaigns started before the window but were still shown recently.
 
                 for ad_id, name, mt in db_active:
                     if ad_id not in api_returned_ids:
