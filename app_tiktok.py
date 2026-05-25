@@ -210,7 +210,12 @@ if selected_status != '(all)':
     f = f[f['ad_status'] == selected_status]
 if date_range and len(date_range) == 2:
     d_from, d_to = date_range
-    f = f[(f['last_shown'] >= pd.Timestamp(d_from)) & (f['first_shown'] <= pd.Timestamp(d_to))]
+    # Ads with NaT first_shown (missing data) are kept — NaT means "unknown
+    # start", not "didn't run". Excluding them would silently hide ~33 valid
+    # ads that the API never returned a first_shown_date for.
+    mask_last  = f['last_shown'] >= pd.Timestamp(d_from)
+    mask_first = f['first_shown'].isna() | (f['first_shown'] <= pd.Timestamp(d_to))
+    f = f[mask_last & mask_first]
 
 # ── Page header ───────────────────────────────────────────────────────────────
 st.title("🎯 TikTok Political Ads — Cyprus 2026")
