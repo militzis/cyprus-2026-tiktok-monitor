@@ -135,7 +135,6 @@ jobs:
           python refresh_known_catalogs.py --skip-if-recent-hours 2.5
 
       - name: Enrich newly-discovered ads
-        continue-on-error: true   # API may still be throttled after catalog refresh
         env:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
           TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}

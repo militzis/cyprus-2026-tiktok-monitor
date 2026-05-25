@@ -1,6 +1,6 @@
 """Generate a daily/weekly report of TikTok ad status changes.
 
-Reads from tiktok_ad_status_changes (populated by refresh_ad_statuses.py)
+Reads from tiktok_ad_status_changes (populated by refresh_known_catalogs.py)
 and produces a markdown report grouped by:
   - new_status (active → removed_by_tiktok is the headline)
   - candidate / party

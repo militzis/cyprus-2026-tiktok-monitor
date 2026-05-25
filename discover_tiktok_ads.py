@@ -37,6 +37,7 @@ except ImportError:
     sys.exit("ERROR: pip install requests")
 
 from dotenv import load_dotenv
+import pipeline_health as _ph
 load_dotenv(override=True)
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -723,37 +724,39 @@ def _upsert_rows_unlocked(rows: list[dict]) -> int:
         ON CONFLICT(ad_id) DO UPDATE SET {update_set}
     """
     saved = 0
-    for r in rows:
-        try:
-            conn.execute(sql, (
-                r.get('ad_id'),
-                r.get('advertiser_id'),
-                r.get('advertiser_disclosed_name'),
-                r.get('ad_funded_by'),
-                r.get('country_code'),
-                r.get('ad_url'),
-                r.get('first_shown'),
-                r.get('last_shown'),
-                r.get('ad_status'),
-                r.get('status_statement'),
-                r.get('videos_json'),
-                r.get('image_urls_json'),
-                r.get('reach_raw'),
-                r.get('times_shown_lower_bound'),
-                r.get('times_shown_upper_bound'),
-                r.get('targeting_json'),
-                r.get('matched_candidate'),
-                r.get('matched_party'),
-                r.get('matched_district'),
-                r.get('match_type'),
-                r.get('is_political', 1),
-                now,
-            ))
-            saved += 1
-        except sqlite3.Error as e:
-            print(f"  [db] skipped: {e}")
-    conn.commit()
-    conn.close()
+    try:
+        for r in rows:
+            try:
+                conn.execute(sql, (
+                    r.get('ad_id'),
+                    r.get('advertiser_id'),
+                    r.get('advertiser_disclosed_name'),
+                    r.get('ad_funded_by'),
+                    r.get('country_code'),
+                    r.get('ad_url'),
+                    r.get('first_shown'),
+                    r.get('last_shown'),
+                    r.get('ad_status'),
+                    r.get('status_statement'),
+                    r.get('videos_json'),
+                    r.get('image_urls_json'),
+                    r.get('reach_raw'),
+                    r.get('times_shown_lower_bound'),
+                    r.get('times_shown_upper_bound'),
+                    r.get('targeting_json'),
+                    r.get('matched_candidate'),
+                    r.get('matched_party'),
+                    r.get('matched_district'),
+                    r.get('match_type'),
+                    r.get('is_political', 1),
+                    now,
+                ))
+                saved += 1
+            except sqlite3.Error as e:
+                print(f"  [db] skipped: {e}")
+        conn.commit()
+    finally:
+        conn.close()
     return saved
 
 
@@ -879,8 +882,6 @@ def discover_cy_advertisers(search_terms: list[str],
     print(f"  [discover] Found {len(found)} unique CY advertisers total (across all runs)")
     return found
 
-
-import pipeline_health as _ph
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

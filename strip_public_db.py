@@ -38,7 +38,7 @@ DB = os.environ.get('POLITICIAN_ADS_DB',
 
 # Single source of truth for "what counts as public" lives in
 # build_public_db.py; this script keeps the patterns in lockstep.
-DROP_MATCH_LIKE          = ['content_keyword', 'content_keyword%',
+DROP_MATCH_LIKE          = ['content_keyword%',      # covers exact + prefixed variants
                             'likely_false_positive%']
 DROP_NUMERIC_HANDLE_GLOB = '[0-9]*'
 COLUMNS_TO_NULL          = ['targeting_json', 'avatar_url']

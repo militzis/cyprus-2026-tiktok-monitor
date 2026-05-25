@@ -34,6 +34,11 @@ jobs:
   discover:
     runs-on: ubuntu-latest
     timeout-minutes: 120    # generous; usually finishes in 60-90 min
+    # Force unbuffered stdout so script progress appears in the log even
+    # if the job is killed or crashes mid-run (mirrors election_week.yml).
+    # Without this a 90-min run that crashes at minute 40 shows zero lines.
+    env:
+      PYTHONUNBUFFERED: "1"
     permissions:
       contents: write       # push DB + cache file updates back
 

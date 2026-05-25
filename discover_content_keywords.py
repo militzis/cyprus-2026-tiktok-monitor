@@ -14,17 +14,29 @@ import sys, os, time, json, sqlite3
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 import discover_tiktok_ads as t
 import pipeline_health as _ph
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-# Honour POLITICIAN_ADS_DB so CI (which only has the public DB checked out)
-# doesn't crash on a missing tiktok_ads table. Falls back to the master path
-# alongside the script for local dev. Matches refresh_ad_statuses.py.
-DB   = os.environ.get('POLITICIAN_ADS_DB',
-                      os.path.join(BASE, 'politician_ads.db'))
+# Use the same DB path as discover_tiktok_ads (t.DB_PATH) so KNOWN_BIDS,
+# upserts, and protected-tier reads all hit the same file. Previously this
+# fell back to os.path.join(BASE, 'politician_ads.db') which is the script
+# directory — NOT the master DB at meta_pipeline_data/ — so locally without
+# the env var KNOWN_BIDS loaded from an empty file and all 921+ advertisers
+# looked "new" every run. t.DB_PATH already honours POLITICIAN_ADS_DB.
+DB   = t.DB_PATH
 SIDE_CACHE = os.path.join(BASE, 'content_keyword_discovery.json')
+
+
+def _save_side_cache(data: dict) -> None:
+    """Atomic write: write to .tmp then os.replace() so a mid-write crash
+    never leaves a corrupted JSON (mirrors discover_tiktok_ads._save_discovered_cache)."""
+    tmp = SIDE_CACHE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, SIDE_CACHE)
 
 # ── Keyword universe ──────────────────────────────────────────────────────────
 KEYWORDS = [
@@ -213,8 +225,7 @@ def main() -> None:
                 continue
             side['tried_keywords'].append(kw)
             if not ads:
-                with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
-                    json.dump(side, f, indent=2, ensure_ascii=False)
+                _save_side_cache(side)
                 time.sleep(t.REQUEST_DELAY)
                 continue
             total_ads += len(ads)
@@ -248,9 +259,8 @@ def main() -> None:
                 elif bid_str in new_bids and kw not in new_bids[bid_str]['hit_terms']:
                     new_bids[bid_str]['hit_terms'].append(kw)
             print(f"    → {len(ads)} ads ({new_for_kw} from NEW advertisers)")
-            # Checkpoint after every keyword
-            with open(SIDE_CACHE, 'w', encoding='utf-8') as f:
-                json.dump(side, f, indent=2, ensure_ascii=False)
+            # Checkpoint after every keyword (atomic write — crash-safe)
+            _save_side_cache(side)
             time.sleep(t.REQUEST_DELAY)
 
         print(f"\n  swept {len(side['tried_keywords'])}/{len(KEYWORDS)} keywords")
@@ -312,7 +322,7 @@ def main() -> None:
             # Filter out any ads whose advertiser_id is already in a PROMOTED tier
             # (manual_resume, needs_profile_verification, likely_false_positive_*).
             # Otherwise the upsert would demote them back to content_keyword.
-            cdb = sqlite3.connect(t.DB_PATH)
+            cdb = sqlite3.connect(DB)
             protected = {r[0] for r in cdb.execute("""
                 SELECT DISTINCT advertiser_id FROM tiktok_ads
                 WHERE match_type IN ('manual_resume','needs_profile_verification')
