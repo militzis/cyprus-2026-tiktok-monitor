@@ -700,7 +700,24 @@ def _upsert_rows_unlocked(rows: list[dict]) -> int:
     now   = datetime.now(timezone.utc).isoformat()
     cols       = ",".join(_UPSERT_COLS)
     placeholders = ",".join("?" * len(_UPSERT_COLS))
-    update_set = ",".join(f"{c}=excluded.{c}" for c in _UPSERT_COLS if c != 'ad_id')
+    # Build per-column update expressions.
+    # status_statement is special: if the DB row already carries a confirmed
+    # enforcement classification ("violation of tiktok"), keep it — the API
+    # will never return the ad again after enforcement removal, so this path
+    # is only reached during the brief race window when the ad is still indexed
+    # but already marked. Without this guard a concurrent upsert with
+    # status_statement='N/A' would silently wipe the enforcement record.
+    _status_expr = (
+        "status_statement=CASE "
+        "  WHEN tiktok_ads.status_statement LIKE '%violation%' "
+        "    THEN tiktok_ads.status_statement "
+        "  ELSE excluded.status_statement "
+        "END"
+    )
+    update_set = ",".join(
+        _status_expr if c == 'status_statement' else f"{c}=excluded.{c}"
+        for c in _UPSERT_COLS if c != 'ad_id'
+    )
     sql = f"""
         INSERT INTO tiktok_ads ({cols}) VALUES ({placeholders})
         ON CONFLICT(ad_id) DO UPDATE SET {update_set}

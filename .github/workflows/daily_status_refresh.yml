@@ -38,10 +38,11 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install minimal deps (refresh + report + auto-review)
+      - name: Install minimal deps (refresh + report + auto-review + headless)
         run: |
           set -euo pipefail
-          pip install --quiet requests python-dotenv filelock anthropic pandas
+          pip install --quiet requests python-dotenv filelock anthropic pandas playwright
+          python -m playwright install chromium --with-deps
 
       # Run the test suite BEFORE touching the live DB or hitting the API.
       # If a recent commit broke load_ads()/derive_status()/numeric-handle
@@ -72,6 +73,19 @@ jobs:
       # `--since-days 30` option also re-enriches stale records so targeting
       # changes don't go undetected forever. Without this, the dashboard's
       # targeting/audience columns stay mostly NULL.
+      # Classify any ads that disappeared from the API since last run.
+      # refresh_known_catalogs (above) marks them 'No longer returned by API';
+      # this step visits each library URL with a headless browser and splits
+      # them into enforcement (violation message) vs voluntary (campaign ended).
+      # Capped at 50/day so a burst of removals doesn't stall the workflow.
+      # Idempotent: skips ads already classified as enforcement or voluntary.
+      - name: Classify disappeared ads (enforcement vs voluntary)
+        env:
+          POLITICIAN_ADS_DB: politician_ads_public.db
+        run: |
+          set -euo pipefail
+          python check_ad_library_status.py --limit 50
+
       - name: Enrich ad targeting + demographics (tier 2)
         env:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
