@@ -30,14 +30,14 @@ sys.path.insert(0, ROOT)
 # Update both when a file moves in/out of deploy.
 CANONICAL_IN_DEPLOY = [
     'app_tiktok.py',
-    'refresh_ad_statuses.py',
+    # refresh_ad_statuses.py — removed 2026-05-20; superseded by refresh_known_catalogs.py
     'status_change_report.py',
     'export_bulk_report.py',
     'discover_tiktok_ads.py',
     'discover_content_keywords.py',
     'tiktok_api.py',
     'db_lock.py',
-    'find_canonical_post_urls.py',
+    # find_canonical_post_urls.py — removed (no longer in this repo)
     'strip_public_db.py',
     'refresh_known_catalogs.py',
     'export_tiktok_daily_csv.py',
