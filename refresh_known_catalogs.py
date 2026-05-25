@@ -60,6 +60,7 @@ sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') e
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import discover_tiktok_ads as t
 from tiktok_api import resolve_disclosed_name, resolve_funded_by
+import pipeline_health as _ph
 
 DB = os.environ.get('POLITICIAN_ADS_DB',
                     os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -87,49 +88,6 @@ DEFAULT_SINCE_DAYS = 60
 def default_since() -> str:
     return (date.today() - timedelta(days=DEFAULT_SINCE_DAYS)).strftime('%Y-%m-%d')
 
-
-def _ensure_health_schema(conn: sqlite3.Connection) -> None:
-    """Mirror of the schema in refresh_ad_statuses.py — kept inline rather
-    than imported to avoid coupling this script to the refresh module's
-    internal helpers. A follow-up refactor will extract pipeline_health
-    into a shared helper (deferred TODO #6 from the architecture review)."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_health (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_kind     TEXT    NOT NULL,
-            started_at   TEXT    NOT NULL,
-            finished_at  TEXT    NOT NULL,
-            status       TEXT    NOT NULL,
-            ads_checked  INTEGER,
-            changes      INTEGER,
-            errors       INTEGER,
-            error_msg    TEXT,
-            since_arg    TEXT,
-            limit_arg    INTEGER
-        )
-    """)
-    conn.commit()
-
-
-def _record_health(run_kind: str, started_at: str, status: str,
-                   ads_checked: int = 0, changes: int = 0, errors: int = 0,
-                   error_msg: str | None = None, since_arg: str | None = None) -> None:
-    """Best-effort heartbeat write. Never raises so a heartbeat failure
-    can't take down the catalog-refresh run."""
-    try:
-        conn = sqlite3.connect(DB)
-        _ensure_health_schema(conn)
-        conn.execute("""
-            INSERT INTO pipeline_health
-              (run_kind, started_at, finished_at, status,
-               ads_checked, changes, errors, error_msg, since_arg)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
-              status, ads_checked, changes, errors, error_msg, since_arg))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"  ⚠ heartbeat write failed: {e!r}", flush=True)
 
 
 def _build_row(item: dict, classification: dict, advertiser_id: str) -> dict:
@@ -321,15 +279,15 @@ def main(since: str, skip_if_recent_hours: float | None = None) -> int:
     finally:
         api_summary = t.print_api_summary('catalog_refresh')
         msg = crash_msg if crash_msg else (api_summary or None)
-        _record_health(
+        _ph.record(
+            DB,
             run_kind='catalog_refresh',
             started_at=started_at,
             status='failed' if crash_msg else 'ok',
             ads_checked=n_advertisers,
             changes=n_new_ads,
-            errors=0,
-            error_msg=msg,
             since_arg=since,
+            error_msg=msg,
         )
 
 

@@ -54,13 +54,9 @@ jobs:
           python tests/test_dashboard_select_completeness.py
           python tests/test_shared_files_sync.py
 
-      # Re-fetch CY ad catalogs for known political-tier advertisers so
-      # new ads they post show up daily, not weekly. Runs FIRST (before
-      # refresh_ad_statuses.py) because it stamps last_status_check on
-      # every ad it processes — so refresh_ad_statuses.py --since 24h
-      # skips those advertisers entirely, halving /ad/query/ API calls.
-      # Without this ordering, both scripts query /ad/query/ for the same
-      # 74 advertisers in the same run, doubling load and causing 429s.
+      # Re-fetch CY ad catalogs for all known political-tier advertisers.
+      # Updates ad_status on existing ads AND catches any new ads they posted.
+      # This is the only API step that touches /ad/query/ — no duplication.
       - name: Refresh known advertisers' catalogs
         env:
           TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
@@ -69,22 +65,6 @@ jobs:
         run: |
           set -euo pipefail
           python refresh_known_catalogs.py
-
-      # Runs AFTER catalog refresh. Because refresh_known_catalogs.py stamps
-      # last_status_check for all 74 known advertisers, this step finds almost
-      # nothing to do for those (skipped by --since 24h). Its real value here
-      # is change tracking: writing to tiktok_ad_status_changes when ad_status
-      # flips (drives status_change_report.py + export_tiktok_daily_csv.py).
-      # Also catches any ads from advertisers NOT in the catalog refresh list
-      # (e.g. recently-discovered accounts not yet in a verified political tier).
-      - name: Refresh ad statuses
-        env:
-          TIKTOK_CLIENT_KEY:    ${{ secrets.TIKTOK_CLIENT_KEY }}
-          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
-          POLITICIAN_ADS_DB:    politician_ads_public.db
-        run: |
-          set -euo pipefail
-          python refresh_ad_statuses.py --since 24h --limit 500
 
       # Tier-2 enrichment: pulls targeting / age / gender / interest /
       # per-country reach into the DB for any ad we haven't enriched yet.
@@ -175,10 +155,8 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "auto: daily ad-status refresh $(date -u +%Y-%m-%d)"
-            # Rebase before push: _checkpoint_push() inside refresh_ad_statuses.py
-            # may have committed mid-run, or an election-week tick queued behind
-            # us could have pushed while this job ran. Without the rebase the push
-            # fails with "non-fast-forward" and the reports are lost.
+            # Rebase before push in case an election-week tick or concurrent job
+            # pushed while this run was in progress (non-fast-forward protection).
             git pull --rebase origin main
             git push
           fi

@@ -44,6 +44,7 @@ DB   = os.environ.get(
 )
 sys.path.insert(0, BASE)
 import discover_tiktok_ads as t
+import pipeline_health as _ph
 
 AD_DETAIL_URL = "https://open.tiktokapis.com/v2/research/adlib/ad/detail/"
 
@@ -79,42 +80,12 @@ NEW_COLS = [
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Add any missing targeting columns to tiktok_ads. Idempotent."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(tiktok_ads)")}
     for col, typ in NEW_COLS:
         if col not in existing:
             conn.execute(f"ALTER TABLE tiktok_ads ADD COLUMN {col} {typ}")
             print(f"  + added column {col} {typ}")
-    # Heartbeat table — shared with refresh_ad_statuses.py
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_health (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_kind     TEXT    NOT NULL,
-            started_at   TEXT    NOT NULL,
-            finished_at  TEXT    NOT NULL,
-            status       TEXT    NOT NULL,
-            ads_checked  INTEGER,
-            changes      INTEGER,
-            errors       INTEGER,
-            error_msg    TEXT,
-            since_arg    TEXT,
-            limit_arg    INTEGER
-        )
-    """)
-    conn.commit()
-
-
-def record_health(conn, started_at, status, n_done, n_errors,
-                  error_msg=None, since_arg=None, limit_arg=None):
-    """Insert one row into pipeline_health. Always called from a top-level
-    try/finally so even crashes get recorded."""
-    finished_at = datetime.now(timezone.utc).isoformat()
-    conn.execute("""
-        INSERT INTO pipeline_health
-          (run_kind, started_at, finished_at, status,
-           ads_checked, changes, errors, error_msg, since_arg, limit_arg)
-        VALUES ('enrich', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (started_at, finished_at, status, n_done, n_done, n_errors,
-          error_msg, since_arg, limit_arg))
     conn.commit()
 
 
@@ -259,10 +230,10 @@ def _run(args):
         return
 
     if not rows:
-        record_health(conn, started_at, 'ok', 0, 0,
-                      since_arg=str(args.since_days) if args.since_days else None,
-                      limit_arg=args.limit)
         conn.close()
+        _ph.record(DB, run_kind='enrich', started_at=started_at, status='ok',
+                   since_arg=str(args.since_days) if args.since_days else None,
+                   limit_arg=args.limit)
         print("  Nothing to enrich.")
         return
 
@@ -291,17 +262,21 @@ def _run(args):
         crash_msg = repr(e)
         raise
     finally:
-        api_summary = (t.print_api_summary('enrich')
-                       if hasattr(t, 'print_api_summary') else '')
+        api_summary = t.print_api_summary('enrich')
         msg = crash_msg if crash_msg else (api_summary or None)
-        record_health(
-            conn, started_at,
+        conn.close()
+        _ph.record(
+            DB,
+            run_kind='enrich',
+            started_at=started_at,
             status='failed' if crash_msg else 'ok',
-            n_done=n_done, n_errors=n_errors, error_msg=msg,
+            ads_checked=n_done,
+            changes=n_done,
+            errors=n_errors,
+            error_msg=msg,
             since_arg=str(args.since_days) if args.since_days else None,
             limit_arg=args.limit,
         )
-        conn.close()
         print(f"\n  ✓ enriched {n_done}/{len(rows)} ads ({n_errors} errors)")
 
 

@@ -863,50 +863,7 @@ def discover_cy_advertisers(search_terms: list[str],
     return found
 
 
-# ── Heartbeat (pipeline_health) ───────────────────────────────────────────────
-# Shared shape with refresh_ad_statuses.py + tiktok_tier2_fetch.py. Without
-# this row, the dashboard health badge can't tell whether discovery is healthy
-# — silent failures (like the no-such-table crash on 2026-05-19) stayed
-# invisible because only refresh + enrich wrote heartbeats.
-
-def _ensure_health_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_health (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_kind     TEXT    NOT NULL,
-            started_at   TEXT    NOT NULL,
-            finished_at  TEXT    NOT NULL,
-            status       TEXT    NOT NULL,
-            ads_checked  INTEGER,
-            changes      INTEGER,
-            errors       INTEGER,
-            error_msg    TEXT,
-            since_arg    TEXT,
-            limit_arg    INTEGER
-        )
-    """)
-    conn.commit()
-
-
-def _record_health(run_kind: str, started_at: str, status: str,
-                   ads_checked: int = 0, changes: int = 0, errors: int = 0,
-                   error_msg: str | None = None) -> None:
-    """Best-effort heartbeat write. Never raises — we don't want a heartbeat
-    failure to take down the discovery run itself."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        _ensure_health_schema(conn)
-        conn.execute("""
-            INSERT INTO pipeline_health
-              (run_kind, started_at, finished_at, status,
-               ads_checked, changes, errors, error_msg)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
-              status, ads_checked, changes, errors, error_msg))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"  ⚠ heartbeat write failed: {e!r}")
+import pipeline_health as _ph
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1062,10 +1019,9 @@ def main():
         api_summary = print_api_summary('discover_name')
         # Skip heartbeat on --dry-run (no DB writes intended)
         if not getattr(args, 'dry_run', False):
-            # Tuck the API summary into error_msg even on success so the
-            # dashboard health badge can show it (no schema change needed).
             msg = crash_msg if crash_msg else (api_summary or None)
-            _record_health(
+            _ph.record(
+                DB_PATH,
                 run_kind='discover_name',
                 started_at=started_at,
                 status='failed' if crash_msg else 'ok',

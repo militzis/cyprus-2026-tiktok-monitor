@@ -18,9 +18,10 @@ name: Election week — intensive monitoring (every 3 hours)
 # election-day takedowns or new last-minute advertisers.
 
 on:
-  schedule:
-    # Every 3 hours, every day (active only during the election week)
-    - cron: '0 */3 * * *'
+  # Cron disabled post-election (2026-05-25). Re-enable for next election cycle
+  # by un-commenting the schedule block and updating the silence-window dates.
+  # schedule:
+  #   - cron: '0 */3 * * *'
   workflow_dispatch:
 
 # Shared concurrency group across daily / weekly / election-week. All three

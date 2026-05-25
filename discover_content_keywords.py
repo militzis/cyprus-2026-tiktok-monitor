@@ -10,14 +10,13 @@
       content-search hit term in matched_party as a starting hint
    5. Persist a side-cache (content_keyword_discovery.json) for resumability
 """
-import sys, os, time, json, sqlite3, importlib
+import sys, os, time, json, sqlite3
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.stdout.reconfigure(encoding='utf-8')
 import discover_tiktok_ads as t
-importlib.reload(t)
-import requests
+import pipeline_health as _ph
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 # Honour POLITICIAN_ADS_DB so CI (which only has the public DB checked out)
@@ -127,50 +126,6 @@ SINCE = '20250901'
 TODAY_MINUS_1 = (date.today() - timedelta(days=1)).strftime('%Y%m%d')
 
 
-# ── Heartbeat (pipeline_health) ───────────────────────────────────────────────
-# Shared shape with refresh_ad_statuses.py + discover_tiktok_ads.py. Without
-# this row, the dashboard health badge can't tell whether discovery is healthy
-# — silent failures (like the no-such-table crash on 2026-05-19) stayed
-# invisible because only refresh + enrich wrote heartbeats.
-
-def _ensure_health_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_health (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_kind     TEXT    NOT NULL,
-            started_at   TEXT    NOT NULL,
-            finished_at  TEXT    NOT NULL,
-            status       TEXT    NOT NULL,
-            ads_checked  INTEGER,
-            changes      INTEGER,
-            errors       INTEGER,
-            error_msg    TEXT,
-            since_arg    TEXT,
-            limit_arg    INTEGER
-        )
-    """)
-    conn.commit()
-
-
-def _record_health(run_kind: str, started_at: str, status: str,
-                   ads_checked: int = 0, changes: int = 0, errors: int = 0,
-                   error_msg: str | None = None) -> None:
-    """Best-effort heartbeat write. Never raises — a heartbeat failure
-    shouldn't take down the discovery run."""
-    try:
-        conn = sqlite3.connect(DB)
-        _ensure_health_schema(conn)
-        conn.execute("""
-            INSERT INTO pipeline_health
-              (run_kind, started_at, finished_at, status,
-               ads_checked, changes, errors, error_msg)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (run_kind, started_at, datetime.now(timezone.utc).isoformat(),
-              status, ads_checked, changes, errors, error_msg))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"  ⚠ heartbeat write failed: {e!r}")
 
 
 def search_ads_by_keyword(keyword: str, max_pages: int = 5) -> list[dict]:
@@ -383,7 +338,8 @@ def main() -> None:
         # Tuck API summary into error_msg on success so the dashboard
         # health badge can show it without a schema change.
         msg = crash_msg if crash_msg else (api_summary or None)
-        _record_health(
+        _ph.record(
+            DB,
             run_kind='discover_keywords',
             started_at=started_at,
             status='failed' if crash_msg else 'ok',
