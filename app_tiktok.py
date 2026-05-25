@@ -1148,7 +1148,7 @@ with tab_status:
         )
     else:
         st.write(f"**{len(changes)} most-recent transitions** (newest first)")
-        changes['observed_at'] = pd.to_datetime(changes['observed_at'])
+        changes['observed_at'] = pd.to_datetime(changes['observed_at'], utc=True)
         changes['transition'] = changes['prev_status'].fillna('?') + ' → ' + changes['new_status'].fillna('?')
         st.dataframe(
             changes[['observed_at', 'transition', 'handle', 'matched_candidate',
