@@ -554,25 +554,41 @@ with tab_overview:
     )
 
     import datetime as _dt
-    _election_week = [_dt.date(2026, 5, d) for d in range(18, 25)]
-    _day_labels    = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun 🗳️']
+    _ELECTION_DAY = _dt.date(2026, 5, 24)
+    _CAMPAIGN_START = _dt.date(2025, 9, 10)
+
+    _col_from, _col_to = st.columns(2)
+    with _col_from:
+        _range_start = st.date_input(
+            "From", value=_dt.date(2026, 4, 24),
+            min_value=_CAMPAIGN_START, max_value=_ELECTION_DAY,
+            key='ew_from'
+        )
+    with _col_to:
+        _range_end = st.date_input(
+            "To", value=_ELECTION_DAY,
+            min_value=_CAMPAIGN_START, max_value=_ELECTION_DAY,
+            key='ew_to'
+        )
 
     _fs  = f['first_shown'].dt.date
     _ls  = f['last_shown'].dt.date
     _enf = f['status_statement'].str.contains('Removed from TikTok', na=False)
 
     _ew_rows = []
-    for _d, _lbl in zip(_election_week, _day_labels):
+    _d = _range_start
+    while _d <= _range_end:
         _active_mask = (_fs <= _d) & (_ls >= _d)
         _ew_rows.append({
             'Date':                str(_d),
-            'Day':                 _lbl,
+            'Day':                 _d.strftime('%a') + (' 🗳️' if _d == _ELECTION_DAY else ''),
             'Total Ads':           int((_fs <= _d).sum()),
             'Running':             int(_active_mask.sum()),
             'Removed by TikTok':   int((_active_mask &  _enf).sum()),
             'Inactive':            int((_active_mask & ~_enf).sum()),
             'Active (last shown)': int((_ls == _d).sum()),
         })
+        _d += _dt.timedelta(days=1)
 
     _ew_df = pd.DataFrame(_ew_rows)
     st.dataframe(_ew_df, hide_index=True, use_container_width=True)
