@@ -542,6 +542,40 @@ with tab_overview:
         reach_counts = f['reach_raw'].value_counts().head(10)
         st.bar_chart(reach_counts, height=300)
 
+    # ── Election week daily breakdown ────────────────────────────────────────
+    st.divider()
+    st.subheader("📅 Election week — daily snapshot (18–24 May 2026)")
+    st.caption(
+        "**Active**: ads confirmed running on that day (first_shown ≤ day ≤ last_shown).  "
+        "**Removed by TikTok**: enforcement-removed ads that were still running on that day.  "
+        "**Inactive**: organic stops — ads running that day whose ad was not enforcement-removed.  "
+        "**Last shown**: ads whose most-recent confirmed-live date = that day (wind-down count)."
+    )
+
+    import datetime as _dt
+    _election_week = [_dt.date(2026, 5, d) for d in range(18, 25)]
+    _day_labels    = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun 🗳️']
+
+    _fs  = f['first_shown'].dt.date
+    _ls  = f['last_shown'].dt.date
+    _enf = f['status_statement'].str.contains('Removed from TikTok', na=False)
+
+    _ew_rows = []
+    for _d, _lbl in zip(_election_week, _day_labels):
+        _active_mask = (_fs <= _d) & (_ls >= _d)
+        _ew_rows.append({
+            'Date':              str(_d),
+            'Day':               _lbl,
+            'Active':            int(_active_mask.sum()),
+            'Removed by TikTok': int((_active_mask &  _enf).sum()),
+            'Inactive':          int((_active_mask & ~_enf).sum()),
+            'Last shown':        int((_ls == _d).sum()),
+        })
+
+    _ew_df = pd.DataFrame(_ew_rows)
+    st.dataframe(_ew_df, hide_index=True, use_container_width=True)
+    st.bar_chart(_ew_df.set_index('Date')[['Active', 'Removed by TikTok', 'Last shown']], height=250)
+
 # ── Enforcement scorecard ────────────────────────────────────────────────────
 # Single-page, journalist-quotable answer to: "How well does TikTok enforce
 # its own no-political-ads policy in Cyprus?"
