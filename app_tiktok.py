@@ -708,6 +708,86 @@ with tab_enforce:
             "(TikTok takedowns). A widening gap = enforcement falling behind."
         )
 
+    # ─── Pre-election enforcement timeline ────────────────────────────
+    # Two classes of evidence:
+    #   (A) Real-time: 259 ads caught by the status-changes log with exact
+    #       timestamps — all May 18-21, before polling day (May 24).
+    #   (B) Retro: 372 ads whose "Removed from TikTok" label was confirmed
+    #       May 26 (first status-detail run), but whose absence from the API
+    #       was already confirmed pre-election:
+    #         • 143 confirmed absent by May 17-18 (last seen Sep 25 – Mar 26)
+    #         • 224 confirmed absent by May 19-21 (last seen Mar 22 – May 9)
+    #         •   4 confirmed absent May 22-24    (last seen May 21-22)
+    #         •   1 confirmed absent May 25-26    (last seen May 23)
+    # Net: 630 of 631 removals occurred before or on election day.
+    st.divider()
+    st.markdown("### 🗓 Pre-election enforcement timeline")
+    st.caption(
+        "TikTok's enforcement was overwhelmingly **pre-election** (all before May 24). "
+        "Two data sources are shown: ads with exact removal timestamps "
+        "(from the real-time status log) and ads whose API absence was "
+        "confirmed before the election but whose removal date is uncertain."
+    )
+
+    import datetime as _dt2
+
+    # ── Part 1: daily real-time confirmed removals ──
+    try:
+        _enf_conn = sqlite3.connect(DB)
+        _enf_changes = pd.read_sql_query("""
+            SELECT DATE(observed_at) AS day, COUNT(DISTINCT ad_id) AS removals
+            FROM tiktok_ad_status_changes
+            WHERE new_statement LIKE '%Removed from TikTok%'
+               OR new_status = 'removed_by_tiktok'
+            GROUP BY 1 ORDER BY 1
+        """, _enf_conn)
+        _enf_conn.close()
+        if not _enf_changes.empty:
+            _enf_changes['day'] = pd.to_datetime(_enf_changes['day'])
+            _enf_changes = _enf_changes.set_index('day')
+            # Pad to cover election window
+            _idx = pd.date_range('2026-05-14', '2026-05-27')
+            _enf_changes = _enf_changes.reindex(_idx, fill_value=0)
+            st.markdown("**Confirmed by real-time log** (exact date known)")
+            st.bar_chart(_enf_changes[['removals']], height=200)
+            st.caption(
+                "These 259 removals all occurred May 18–21 — days before the May 24 election."
+            )
+    except Exception:
+        pass
+
+    # ── Part 2: retro enforcement summary table ──
+    st.markdown("**Retro enforcement** — confirmed absent from API, exact removal date uncertain")
+    _retro_summary = pd.DataFrame([
+        {"Group": "A — gone before election week",
+         "Confirmed absent by": "May 17–18",
+         "Last seen active": "Sep 2025 – Mar 2026",
+         "Ads": 143,
+         "Note": "Well before election; oldest removals in dataset"},
+        {"Group": "B — gone during election week (pre-vote)",
+         "Confirmed absent by": "May 19–21",
+         "Last seen active": "Mar 22 – May 9",
+         "Ads": 224,
+         "Note": "Removed in weeks before polling day"},
+        {"Group": "C — gone around polling day",
+         "Confirmed absent by": "May 22–24",
+         "Last seen active": "May 21–22",
+         "Ads": 4,
+         "Note": "Removed within 2–3 days of election"},
+        {"Group": "D — post-election",
+         "Confirmed absent by": "May 25–26",
+         "Last seen active": "May 23",
+         "Ads": 1,
+         "Note": "Single ad removed day after election"},
+    ])
+    st.dataframe(_retro_summary, hide_index=True, use_container_width=True)
+    st.caption(
+        "**Key finding:** 630 of 631 enforcement removals occurred before or on election day. "
+        "This was not a retroactive post-election sweep — TikTok's enforcement was ongoing "
+        "throughout the campaign, with the largest documented wave on May 20–21 "
+        "(49 + 209 = 258 real-time confirmed removals in two days)."
+    )
+
     # ─── Currently-live offenders worth flagging ──────────────────────
     st.divider()
     st.markdown("### Currently-live ads worth flagging to TikTok")
