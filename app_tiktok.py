@@ -547,10 +547,9 @@ with tab_overview:
     st.subheader("📅 Election week — daily snapshot (18–24 May 2026)")
     st.caption(
         "**Total Ads**: all ads tracked by that date (cumulative).  "
-        "**Running**: simultaneously active that day (first_shown ≤ day ≤ last_shown; NULL first_shown treated as always started).  "
-        "**Removed by TikTok**: of those running, enforcement-removed.  "
-        "**Inactive**: of those running, stopped organically.  "
-        "**Went dark**: ads whose last confirmed-live date = that day — disappeared from API after this."
+        "**Running**: ads simultaneously active that day (first_shown ≤ day ≤ last_shown).  "
+        "**Removed by TikTok**: of those running, enforcement-removed by the platform.  "
+        "**Went dark**: ads whose last confirmed-live date = that day — gone from API the next check."
     )
 
     import datetime as _dt
@@ -584,8 +583,7 @@ with tab_overview:
             'Day':               _d.strftime('%a') + (' 🗳️' if _d == _ELECTION_DAY else ''),
             'Total Ads':         int((_fs.isna() | (_fs <= _d)).sum()),
             'Running':           int(_active_mask.sum()),
-            'Removed by TikTok': int((_active_mask &  _enf).sum()),
-            'Inactive':          int((_active_mask & ~_enf).sum()),
+            'Removed by TikTok': int((_active_mask & _enf).sum()),
             'Went dark':         int((_ls == _d).sum()),
         })
         _d += _dt.timedelta(days=1)
