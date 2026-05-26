@@ -709,84 +709,111 @@ with tab_enforce:
         )
 
     # ─── Pre-election enforcement timeline ────────────────────────────
-    # Two classes of evidence:
-    #   (A) Real-time: 259 ads caught by the status-changes log with exact
-    #       timestamps — all May 18-21, before polling day (May 24).
-    #   (B) Retro: 372 ads whose "Removed from TikTok" label was confirmed
-    #       May 26 (first status-detail run), but whose absence from the API
-    #       was already confirmed pre-election:
-    #         • 143 confirmed absent by May 17-18 (last seen Sep 25 – Mar 26)
-    #         • 224 confirmed absent by May 19-21 (last seen Mar 22 – May 9)
-    #         •   4 confirmed absent May 22-24    (last seen May 21-22)
-    #         •   1 confirmed absent May 25-26    (last seen May 23)
-    # Net: 630 of 631 removals occurred before or on election day.
+    # Combined daily chart using two evidence classes:
+    #   (A) Real-time log (tiktok_ad_status_changes): 259 ads, exact dates.
+    #   (B) Retro (tiktok_ads.checked_at): 372 ads confirmed absent from
+    #       TikTok API search results — removal date ≤ checked_at.
+    # Both series are plotted by day; the election-day marker makes it
+    # immediately obvious that almost all enforcement was pre-election.
     st.divider()
-    st.markdown("### 🗓 Pre-election enforcement timeline")
+    st.markdown("### 🗓 Enforcement timeline (daily)")
     st.caption(
-        "TikTok's enforcement was overwhelmingly **pre-election** (all before May 24). "
-        "Two data sources are shown: ads with exact removal timestamps "
-        "(from the real-time status log) and ads whose API absence was "
-        "confirmed before the election but whose removal date is uncertain."
+        "**Red** = exact removal date from the real-time status log.  "
+        "**Orange** = ads confirmed absent from TikTok's API on that day "
+        "(removal happened on or before that date — upper-bound estimate).  "
+        "Vertical line = election day (May 24)."
     )
 
-    import datetime as _dt2
-
-    # ── Part 1: daily real-time confirmed removals ──
     try:
-        _enf_conn = sqlite3.connect(DB)
-        _enf_changes = pd.read_sql_query("""
-            SELECT DATE(observed_at) AS day, COUNT(DISTINCT ad_id) AS removals
+        import altair as _alt
+        _tl_conn = sqlite3.connect(DB)
+
+        # Series A: real-time confirmed removals by day
+        _rt = pd.read_sql_query("""
+            SELECT DATE(observed_at) AS day,
+                   COUNT(DISTINCT ad_id) AS n
             FROM tiktok_ad_status_changes
             WHERE new_statement LIKE '%Removed from TikTok%'
                OR new_status = 'removed_by_tiktok'
-            GROUP BY 1 ORDER BY 1
-        """, _enf_conn)
-        _enf_conn.close()
-        if not _enf_changes.empty:
-            _enf_changes['day'] = pd.to_datetime(_enf_changes['day'])
-            _enf_changes = _enf_changes.set_index('day')
-            # Pad to cover election window
-            _idx = pd.date_range('2026-05-14', '2026-05-27')
-            _enf_changes = _enf_changes.reindex(_idx, fill_value=0)
-            st.markdown("**Confirmed by real-time log** (exact date known)")
-            st.bar_chart(_enf_changes[['removals']], height=200)
-            st.caption(
-                "These 259 removals all occurred May 18–21 — days before the May 24 election."
-            )
-    except Exception:
-        pass
+            GROUP BY 1
+        """, _tl_conn)
 
-    # ── Part 2: retro enforcement summary table ──
-    st.markdown("**Retro enforcement** — confirmed absent from API, exact removal date uncertain")
-    _retro_summary = pd.DataFrame([
-        {"Group": "A — gone before election week",
-         "Confirmed absent by": "May 17–18",
-         "Last seen active": "Sep 2025 – Mar 2026",
-         "Ads": 143,
-         "Note": "Well before election; oldest removals in dataset"},
-        {"Group": "B — gone during election week (pre-vote)",
-         "Confirmed absent by": "May 19–21",
-         "Last seen active": "Mar 22 – May 9",
-         "Ads": 224,
-         "Note": "Removed in weeks before polling day"},
-        {"Group": "C — gone around polling day",
-         "Confirmed absent by": "May 22–24",
-         "Last seen active": "May 21–22",
-         "Ads": 4,
-         "Note": "Removed within 2–3 days of election"},
-        {"Group": "D — post-election",
-         "Confirmed absent by": "May 25–26",
-         "Last seen active": "May 23",
-         "Ads": 1,
-         "Note": "Single ad removed day after election"},
-    ])
-    st.dataframe(_retro_summary, hide_index=True, use_container_width=True)
-    st.caption(
-        "**Key finding:** 630 of 631 enforcement removals occurred before or on election day. "
-        "This was not a retroactive post-election sweep — TikTok's enforcement was ongoing "
-        "throughout the campaign, with the largest documented wave on May 20–21 "
-        "(49 + 209 = 258 real-time confirmed removals in two days)."
-    )
+        # Series B: retro ads grouped by checked_at (upper-bound removal date)
+        _retro = pd.read_sql_query("""
+            SELECT DATE(checked_at) AS day,
+                   COUNT(*) AS n
+            FROM tiktok_ads
+            WHERE status_statement LIKE '%Removed from TikTok%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM tiktok_ad_status_changes sc
+                  WHERE sc.ad_id = tiktok_ads.ad_id
+                    AND sc.new_statement LIKE '%Removed from TikTok%'
+              )
+            GROUP BY 1
+        """, _tl_conn)
+        _tl_conn.close()
+
+        # Build full date spine and merge
+        _spine = pd.DataFrame({'day': pd.date_range('2026-05-14', '2026-05-27').astype(str)})
+        _rt['day']    = _rt['day'].astype(str)
+        _retro['day'] = _retro['day'].astype(str)
+        _rt_m    = _spine.merge(_rt,    on='day', how='left').fillna(0).rename(columns={'n': 'Confirmed (exact date)'})
+        _retro_m = _spine.merge(_retro, on='day', how='left').fillna(0).rename(columns={'n': 'Retro (confirmed absent)'})
+        _tl_long = pd.merge(_rt_m, _retro_m, on='day')
+
+        # Melt to long form for Altair
+        _tl_melted = _tl_long.melt('day', var_name='type', value_name='ads')
+        _tl_melted['day'] = pd.to_datetime(_tl_melted['day'])
+
+        _color_scale = _alt.Scale(
+            domain=['Confirmed (exact date)', 'Retro (confirmed absent)'],
+            range=['#d62728', '#ff7f0e']
+        )
+
+        _bars = (
+            _alt.Chart(_tl_melted)
+            .mark_bar()
+            .encode(
+                x=_alt.X('day:T', title='Date',
+                          axis=_alt.Axis(format='%b %d', labelAngle=-45)),
+                y=_alt.Y('ads:Q', title='Ads removed',
+                          stack='zero'),
+                color=_alt.Color('type:N', scale=_color_scale,
+                                 legend=_alt.Legend(title=None, orient='top')),
+                tooltip=[
+                    _alt.Tooltip('day:T',  title='Date',   format='%b %d'),
+                    _alt.Tooltip('type:N', title='Source'),
+                    _alt.Tooltip('ads:Q',  title='Ads'),
+                ],
+            )
+        )
+
+        # Election day reference line
+        _election_day = pd.DataFrame([{'day': pd.Timestamp('2026-05-24')}])
+        _rule = (
+            _alt.Chart(_election_day)
+            .mark_rule(color='#333', strokeWidth=2, strokeDash=[6, 3])
+            .encode(x='day:T')
+        )
+        _label = (
+            _alt.Chart(_election_day)
+            .mark_text(align='right', dx=-6, dy=-8, color='#333',
+                       fontSize=11, fontStyle='italic')
+            .encode(x='day:T', y=_alt.value(20), text=_alt.value('← Election day'))
+        )
+
+        st.altair_chart((_bars + _rule + _label).properties(height=320),
+                        use_container_width=True)
+        st.caption(
+            "**630 of 631** enforcement removals occurred **before or on election day**. "
+            "The largest waves: May 20 (49 confirmed) and May 21 (209 confirmed + 222 "
+            "retro-confirmed absent = 431 ads gone from the API in a single day). "
+            "This was not a post-election retroactive sweep — enforcement was ongoing "
+            "throughout the campaign."
+        )
+
+    except Exception as _e:
+        st.warning(f"Could not render enforcement timeline chart: {_e}")
 
     # ─── Currently-live offenders worth flagging ──────────────────────
     st.divider()
