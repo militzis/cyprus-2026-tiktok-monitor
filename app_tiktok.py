@@ -547,10 +547,10 @@ with tab_overview:
     st.subheader("📅 Election week — daily snapshot (18–24 May 2026)")
     st.caption(
         "**Total Ads**: all ads tracked by that date (cumulative).  "
-        "**Running**: simultaneously active that day (first_shown ≤ day ≤ last_shown).  "
+        "**Running**: simultaneously active that day (first_shown ≤ day ≤ last_shown; NULL first_shown treated as always started).  "
         "**Removed by TikTok**: of those running, enforcement-removed.  "
         "**Inactive**: of those running, stopped organically.  "
-        "**Active (last shown)**: ads whose last confirmed-live date = that day."
+        "**Went dark**: ads whose last confirmed-live date = that day — disappeared from API after this."
     )
 
     import datetime as _dt
@@ -578,21 +578,21 @@ with tab_overview:
     _ew_rows = []
     _d = _range_start
     while _d <= _range_end:
-        _active_mask = (_fs <= _d) & (_ls >= _d)
+        _active_mask = (_fs.isna() | (_fs <= _d)) & (_ls >= _d)
         _ew_rows.append({
-            'Date':                str(_d),
-            'Day':                 _d.strftime('%a') + (' 🗳️' if _d == _ELECTION_DAY else ''),
-            'Total Ads':           int((_fs <= _d).sum()),
-            'Running':             int(_active_mask.sum()),
-            'Removed by TikTok':   int((_active_mask &  _enf).sum()),
-            'Inactive':            int((_active_mask & ~_enf).sum()),
-            'Active (last shown)': int((_ls == _d).sum()),
+            'Date':              str(_d),
+            'Day':               _d.strftime('%a') + (' 🗳️' if _d == _ELECTION_DAY else ''),
+            'Total Ads':         int((_fs.isna() | (_fs <= _d)).sum()),
+            'Running':           int(_active_mask.sum()),
+            'Removed by TikTok': int((_active_mask &  _enf).sum()),
+            'Inactive':          int((_active_mask & ~_enf).sum()),
+            'Went dark':         int((_ls == _d).sum()),
         })
         _d += _dt.timedelta(days=1)
 
     _ew_df = pd.DataFrame(_ew_rows)
     st.dataframe(_ew_df, hide_index=True, use_container_width=True)
-    st.bar_chart(_ew_df.set_index('Date')[['Total Ads', 'Running', 'Active (last shown)']], height=250)
+    st.bar_chart(_ew_df.set_index('Date')[['Total Ads', 'Running', 'Went dark']], height=250)
 
 # ── Enforcement scorecard ────────────────────────────────────────────────────
 # Single-page, journalist-quotable answer to: "How well does TikTok enforce
