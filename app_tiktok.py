@@ -566,15 +566,15 @@ with tab_overview:
         _ew_rows.append({
             'Date':              str(_d),
             'Day':               _lbl,
-            'Active':            int(_active_mask.sum()),
+            'Total Ads':         int(_active_mask.sum()),
             'Removed by TikTok': int((_active_mask &  _enf).sum()),
             'Inactive':          int((_active_mask & ~_enf).sum()),
-            'Last shown':        int((_ls == _d).sum()),
+            'Active (last shown)': int((_ls == _d).sum()),
         })
 
     _ew_df = pd.DataFrame(_ew_rows)
     st.dataframe(_ew_df, hide_index=True, use_container_width=True)
-    st.bar_chart(_ew_df.set_index('Date')[['Active', 'Removed by TikTok', 'Last shown']], height=250)
+    st.bar_chart(_ew_df.set_index('Date')[['Total Ads', 'Removed by TikTok', 'Active (last shown)']], height=250)
 
 # ── Enforcement scorecard ────────────────────────────────────────────────────
 # Single-page, journalist-quotable answer to: "How well does TikTok enforce
