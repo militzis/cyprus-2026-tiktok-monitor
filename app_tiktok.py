@@ -560,7 +560,7 @@ with tab_overview:
     _col_from, _col_to = st.columns(2)
     with _col_from:
         _range_start = st.date_input(
-            "From", value=_dt.date(2026, 4, 24),
+            "From", value=_ELECTION_DAY - _dt.timedelta(days=10),
             min_value=_CAMPAIGN_START, max_value=_ELECTION_DAY,
             key='ew_from'
         )
