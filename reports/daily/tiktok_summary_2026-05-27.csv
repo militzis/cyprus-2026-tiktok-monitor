@@ -1,0 +1,16 @@
+﻿== Window ==
+cutoff_utc,2026-05-26T08:23:52
+generated_utc,2026-05-27T08:23:52
+total_changes,1
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,1,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Χαπεσιάν Άρι,ΔΗΠΑ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΔΗΠΑ,1
