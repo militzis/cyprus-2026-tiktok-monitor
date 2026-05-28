@@ -1,0 +1,21 @@
+﻿== Window ==
+cutoff_utc,2026-05-27T08:22:48
+generated_utc,2026-05-28T08:22:48
+total_changes,24
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,24,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Λοΐζου Μαρία,ΑΜΔΗ,10
+Χατζησταύρου Δήμητρα,ΑΜΔΗ,1
+Παστέλλα Μαρία,ΕΛΑΜ,1
+Χρυσάνθου Λοΐζος,ΑΜΔΗ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΑΜΔΗ,12
+ΑΛΜΑ,7
+ΕΛΑΜ,1
