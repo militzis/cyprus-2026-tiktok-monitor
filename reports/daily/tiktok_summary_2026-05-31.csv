@@ -1,0 +1,21 @@
+﻿== Window ==
+cutoff_utc,2026-05-30T08:04:43
+generated_utc,2026-05-31T08:04:43
+total_changes,14
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,14,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Λοΐζου Μαρία,ΑΜΔΗ,6
+Χρυσάνθου Λοΐζος,ΑΜΔΗ,6
+Παπαχαραλάμπους Ανδρέας,ΕΛΑΜ,1
+Στυλιανού Στέλιος,ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΑΜΔΗ,12
+ΕΛΑΜ,1
+ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ,1
