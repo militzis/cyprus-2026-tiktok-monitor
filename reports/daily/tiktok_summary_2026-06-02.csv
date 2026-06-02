@@ -1,0 +1,22 @@
+﻿== Window ==
+cutoff_utc,2026-06-01T08:57:43
+generated_utc,2026-06-02T08:57:43
+total_changes,19
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,19,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Χρυσάνθου Λοΐζος,ΑΜΔΗ,12
+Λοΐζου Μαρία,ΑΜΔΗ,2
+Πατριωτικό Μέτωπο Λακεδαιμόνιοι — youth wing,ΛΑΚΕΔΑΙΜΟΝΙΟΙ,2
+Παπαχριστοφόρου Στυλιανός,ΑΜΔΗ,2
+Παστέλλα Μαρία,ΕΛΑΜ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΑΜΔΗ,16
+ΛΑΚΕΔΑΙΜΟΝΙΟΙ,2
+ΕΛΑΜ,1
