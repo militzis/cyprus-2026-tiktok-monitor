@@ -1,0 +1,27 @@
+﻿== Window ==
+cutoff_utc,2026-06-03T08:39:25
+generated_utc,2026-06-04T08:39:25
+total_changes,59
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,59,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Στυλιανού Στέλιος,ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ,2
+Πατριωτικό Μέτωπο Λακεδαιμόνιοι — youth wing,ΛΑΚΕΔΑΙΜΟΝΙΟΙ,2
+Λοΐζου Μαρία,ΑΜΔΗ,2
+Παστέλλα Μαρία,ΕΛΑΜ,2
+Θεόφιλος — ΕΛΑΜ supporter (torch-march creative),ΕΛΑΜ,1
+Χατζησταύρου Δήμητρα,ΑΜΔΗ,1
+Παπαχαραλάμπους Ανδρέας,ΕΛΑΜ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΑΛΜΑ,12
+ΕΛΑΜ,4
+ΑΜΔΗ,3
+ΕΝΕΡΓΟΙ ΠΟΛΙΤΕΣ,2
+ΛΑΚΕΔΑΙΜΟΝΙΟΙ,2
+ΣΗΚΟΥ ΠΑΝΩ,1
