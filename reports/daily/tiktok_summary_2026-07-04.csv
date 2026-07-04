@@ -1,0 +1,15 @@
+﻿== Window ==
+cutoff_utc,2026-07-03T07:03:29
+generated_utc,2026-07-04T07:03:29
+total_changes,1
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,1,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+
+== TikTok removals - by party ==
+party,removed_count
+Νέα Δυναμική,1
