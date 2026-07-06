@@ -1,0 +1,18 @@
+﻿== Window ==
+cutoff_utc,2026-07-05T08:37:35
+generated_utc,2026-07-06T08:37:35
+total_changes,4
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,4,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Παπαχριστοφόρου Στυλιανός,ΑΜΔΗ,3
+Αντωνή Αντώνης,ΕΔΕΚ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΑΜΔΗ,3
+ΕΔΕΚ,1
