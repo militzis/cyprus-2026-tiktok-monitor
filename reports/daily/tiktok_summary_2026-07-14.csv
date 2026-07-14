@@ -1,0 +1,18 @@
+﻿== Window ==
+cutoff_utc,2026-07-13T06:27:23
+generated_utc,2026-07-14T06:27:23
+total_changes,2
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,2,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Χρίστου Έλεν,ΣΗΚΟΥ ΠΑΝΩ,1
+Χαπεσιάν Άρι,ΔΗΠΑ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΣΗΚΟΥ ΠΑΝΩ,1
+ΔΗΠΑ,1
