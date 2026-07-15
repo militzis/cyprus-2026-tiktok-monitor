@@ -1,0 +1,2 @@
+﻿observed_at,handle,candidate,party,district,match_type,ad_id,prev_status,new_status,transition_label,new_statement,reach_upper,estimated_eur_mid,first_shown,last_shown,ad_url
+2026-07-15 06:17:54,kyprianouanna,Κυπριανού Άννα,ΔΗΠΑ,Λευκωσία,manual_resume,1868945498979330,active,inactive,REMOVED BY TIKTOK,No longer returned by API — deactivated or removed,10000,28,2026-06-25,2026-06-26,https://library.tiktok.com/ads/detail/?ad_id=1868945498979330

@@ -1,0 +1,16 @@
+﻿== Window ==
+cutoff_utc,2026-07-14T06:31:40
+generated_utc,2026-07-15T06:31:40
+total_changes,1
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,1,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Κυπριανού Άννα,ΔΗΠΑ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΔΗΠΑ,1
