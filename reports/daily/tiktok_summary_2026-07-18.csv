@@ -1,0 +1,21 @@
+﻿== Window ==
+cutoff_utc,2026-07-17T06:21:13
+generated_utc,2026-07-18T06:21:13
+total_changes,4
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,4,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Χρίστου Έλεν,ΣΗΚΟΥ ΠΑΝΩ,1
+Κυπριανού Άννα,ΔΗΠΑ,1
+Παπαχριστοφόρου Στυλιανός,ΑΜΔΗ,1
+
+== TikTok removals - by party ==
+party,removed_count
+Νέα Δυναμική,1
+ΣΗΚΟΥ ΠΑΝΩ,1
+ΔΗΠΑ,1
+ΑΜΔΗ,1
