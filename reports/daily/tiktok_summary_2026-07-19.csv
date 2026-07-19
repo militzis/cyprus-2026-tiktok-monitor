@@ -1,0 +1,16 @@
+﻿== Window ==
+cutoff_utc,2026-07-18T06:46:54
+generated_utc,2026-07-19T06:46:54
+total_changes,1
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,1,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Αντωνή Αντώνης,ΕΔΕΚ,1
+
+== TikTok removals - by party ==
+party,removed_count
+ΕΔΕΚ,1
