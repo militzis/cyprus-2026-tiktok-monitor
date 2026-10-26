@@ -1,0 +1,17 @@
+﻿== Window ==
+cutoff_utc,2026-10-25T10:07:52
+generated_utc,2026-10-26T10:07:52
+total_changes,5
+
+== Transitions ==
+prev_status,new_status,count,label
+active,inactive,5,stopped running
+
+== TikTok removals - by candidate ==
+candidate,party,removed_count
+Χατζησταύρου Δήμητρα,ΑΜΔΗ,2
+
+== TikTok removals - by party ==
+party,removed_count
+Νέα Δυναμική,3
+ΑΜΔΗ,2
